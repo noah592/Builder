@@ -2,7 +2,7 @@
   // =========================
   // CONFIG / BASELINES
   // =========================
-  const VERSION = "v0.3.1 (world+ground)";
+  const VERSION = "v0.4.0 (bodies module)";
 
   // World size baseline
   const WORLD_W = 50000;
@@ -26,13 +26,10 @@
   }
 
   async function boot() {
-    // renderer.js already exists in your setup
     await loadScript("renderer.js");
-
-    // NEW module split
     await loadScript("world.js");
+    await loadScript("bodies.js");
     await loadScript("sketcher.js");
-
     startApp();
   }
 
@@ -49,18 +46,22 @@
     const ctx = canvas.getContext("2d", { alpha: false });
 
     const renderer = window.Renderer.createRenderer({ version: VERSION });
-
-    // Create world + tool
     const world = window.World.createWorld({ width: WORLD_W, height: WORLD_H });
-    const sketcher = window.Sketcher.createSketcher(world);
+    const bodies = window.Bodies.createBodies();
+    const sketcher = window.Sketcher.createSketcher(bodies);
 
-    // Camera (world-space top-left + zoom)
     const cam = { x: 0, y: 0, z: 1.0 };
 
-    // Pan state (middle mouse)
+    // Middle mouse pan
     let panning = false;
     let panStartMouse = { x: 0, y: 0 };
     let panStartCam = { x: 0, y: 0 };
+
+    // Left mouse drag body
+    let draggingBody = false;
+    let dragBodyId = -1;
+    let dragOffset = { x: 0, y: 0 };
+    let suppressNextClick = false;
 
     let didInitCenter = false;
 
@@ -77,16 +78,15 @@
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     }
 
-    function worldToScreen(p, camRef = cam) {
-      return { x: (p.x - camRef.x) * camRef.z, y: (p.y - camRef.y) * camRef.z };
-    }
-
     function screenToWorld(p, camRef = cam) {
       return { x: camRef.x + p.x / camRef.z, y: camRef.y + p.y / camRef.z };
     }
 
+    function worldToScreen(p, camRef = cam) {
+      return { x: (p.x - camRef.x) * camRef.z, y: (p.y - camRef.y) * camRef.z };
+    }
+
     function getWorldFitMinZoom() {
-      // Enforce: viewport (world units) never exceeds world size
       const rect = getRect();
       const minZx = rect.width / WORLD_W;
       const minZy = rect.height / WORLD_H;
@@ -142,13 +142,16 @@
     function draw() {
       renderer.beginFrame(ctx, canvas);
 
-      // World first (ground + any painted solids)
+      // 1) Static world (implicit ground + overrides)
       world.draw(ctx, cam);
 
-      // Tool preview on top
+      // 2) Dynamic bodies
+      bodies.draw(ctx, cam);
+
+      // 3) Tool preview
       sketcher.drawPreview(ctx, cam, worldToScreen);
 
-      // UI last
+      // 4) UI
       renderer.drawVersion(ctx);
     }
 
@@ -168,10 +171,28 @@
         panStartCam = { x: cam.x, y: cam.y };
         return;
       }
+
+      // Left mouse down: try to start dragging a body (only if not placing)
+      if (e.button === 0 && !sketcher.isPlacing()) {
+        const pWorld = screenToWorld(pScreen);
+        const id = bodies.hitTest(pWorld);
+        if (id !== -1) {
+          const pos = bodies.getBodyPos(id);
+          if (pos) {
+            draggingBody = true;
+            dragBodyId = id;
+            dragOffset = { x: pWorld.x - pos.x, y: pWorld.y - pos.y };
+            suppressNextClick = true; // suppress click after drag
+            draw();
+            return;
+          }
+        }
+      }
     });
 
     canvas.addEventListener("mousemove", (e) => {
       const pScreen = getMouseScreen(e);
+      const pWorld = screenToWorld(pScreen);
 
       if (panning) {
         const dx = pScreen.x - panStartMouse.x;
@@ -185,8 +206,17 @@
         return;
       }
 
+      if (draggingBody) {
+        // Move body in world space (translation only)
+        const newX = pWorld.x - dragOffset.x;
+        const newY = pWorld.y - dragOffset.y;
+        bodies.setBodyPos(dragBodyId, newX, newY);
+        draw();
+        return;
+      }
+
       if (sketcher.isPlacing()) {
-        sketcher.updatePlacing(screenToWorld(pScreen));
+        sketcher.updatePlacing(pWorld);
         draw();
       }
     });
@@ -195,15 +225,37 @@
       if (e.button === 1) {
         panning = false;
         draw();
+        return;
+      }
+
+      if (e.button === 0) {
+        if (draggingBody) {
+          draggingBody = false;
+          dragBodyId = -1;
+          dragOffset = { x: 0, y: 0 };
+          draw();
+        }
       }
     });
 
-    // Two-click circle placement: click = start, click = finalize
+    // Two-click placement (click = start, click = finalize)
     canvas.addEventListener("click", (e) => {
       if (e.button !== 0) return;
       if (panning) return;
 
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
+
       const pWorld = screenToWorld(getMouseScreen(e));
+
+      // If click lands on a body and we're not placing, do nothing
+      // (dragging uses mousedown+move)
+      if (!sketcher.isPlacing()) {
+        const hit = bodies.hitTest(pWorld);
+        if (hit !== -1) return;
+      }
 
       if (!sketcher.isPlacing()) {
         sketcher.startPlacing(pWorld);
@@ -252,6 +304,9 @@
       if (e.key === "Escape") {
         sketcher.cancelPlacing();
         panning = false;
+        draggingBody = false;
+        dragBodyId = -1;
+        suppressNextClick = false;
         draw();
       }
 
