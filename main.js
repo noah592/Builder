@@ -1,386 +1,280 @@
 (() => {
   // =========================
-  // CONFIG
+  // CONFIG / BASELINES
   // =========================
-  const VERSION = "v0.1.4 (2026-01-03)";
+  const VERSION = "v0.2.0 (2026-01-03)";
 
-  // World size (world units)
+  // World size baseline (your new default)
   const WORLD_W = 50000;
   const WORLD_H = 5000;
 
-  // Interaction tuning
-  const HIT_PAD_PX = 6;
-  const MIN_ZOOM = 0.1;  // absolute safety min (will be overridden by world-fit min if larger)
+  // Camera zoom limits
+  const MIN_ZOOM_ABS = 0.1; // safety
   const MAX_ZOOM = 8;
 
   // =========================
-  // SETUP
+  // Loader: keep index.html unchanged
   // =========================
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d", { alpha: false });
-
-  const cam = {
-    x: 0,
-    y: 0,
-    z: 1.0,
-  };
-
-  const circles = []; // {x,y,r}
-
-  // New circle placement (two-click)
-  let placing = false;
-  let placeCenter = { x: 0, y: 0 };
-  let placeR = 0;
-
-  // Drag existing circle (left mouse)
-  let draggingCircle = false;
-  let dragIndex = -1;
-  let dragOffset = { x: 0, y: 0 };
-
-  // Pan camera (middle mouse drag)
-  let panning = false;
-  let panStartMouse = { x: 0, y: 0 };
-  let panStartCam = { x: 0, y: 0 };
-
-  let lastMouseScreen = { x: 0, y: 0 };
-  let didInitCenter = false;
-
-  function clamp(v, a, b) {
-    return Math.max(a, Math.min(b, v));
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.head.appendChild(s);
+    });
   }
 
-  function getRect() {
-    return canvas.getBoundingClientRect();
+  async function boot() {
+    // Load modules (globals) without touching index.html
+    await loadScript("renderer.js");
+    await loadScript("sketcher.js");
+
+    startApp();
   }
 
-  function getViewWorldSize() {
-    const rect = getRect();
-    return { w: rect.width / cam.z, h: rect.height / cam.z };
-  }
+  // =========================
+  // App
+  // =========================
+  function startApp() {
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d", { alpha: false });
 
-  function getWorldFitMinZoom() {
-    // Ensure the viewport in world units never exceeds the world size:
-    // rect.width / z <= WORLD_W  =>  z >= rect.width / WORLD_W
-    // rect.height / z <= WORLD_H =>  z >= rect.height / WORLD_H
-    const rect = getRect();
-    const minZx = rect.width / WORLD_W;
-    const minZy = rect.height / WORLD_H;
-    return Math.max(minZx, minZy);
-  }
+    const renderer = window.Renderer.createRenderer({ version: VERSION });
+    const sketcher = window.Sketcher.createSketcher();
 
-  function applyZoomLimits() {
-    const worldFitMin = getWorldFitMinZoom();
-    const effectiveMin = Math.max(MIN_ZOOM, worldFitMin);
-    cam.z = clamp(cam.z, effectiveMin, MAX_ZOOM);
-  }
+    const cam = { x: 0, y: 0, z: 1.0 };
 
-  function centerCameraInWorld() {
-    applyZoomLimits();
-    const view = getViewWorldSize();
-    cam.x = (WORLD_W - view.w) / 2;
-    cam.y = (WORLD_H - view.h) / 2;
-  }
+    let panning = false;
+    let panStartMouse = { x: 0, y: 0 };
+    let panStartCam = { x: 0, y: 0 };
 
-  function clampCameraToWorld() {
-    // With zoom limited so view never exceeds world, these ranges are always valid.
-    const view = getViewWorldSize();
-    cam.x = clamp(cam.x, 0, WORLD_W - view.w);
-    cam.y = clamp(cam.y, 0, WORLD_H - view.h);
-  }
+    let didInitCenter = false;
 
-  function resize() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    const rect = getRect();
+    function clamp(v, a, b) {
+      return Math.max(a, Math.min(b, v));
+    }
 
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
+    function getRect() {
+      return canvas.getBoundingClientRect();
+    }
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    function getMouseScreen(e) {
+      const r = getRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
 
-    if (!didInitCenter) {
-      centerCameraInWorld();
-      didInitCenter = true;
-    } else {
-      // On resize, enforce zoom limits, then clamp camera.
+    function worldToScreen(p, camRef = cam) {
+      return { x: (p.x - camRef.x) * camRef.z, y: (p.y - camRef.y) * camRef.z };
+    }
+
+    function screenToWorld(p, camRef = cam) {
+      return { x: camRef.x + p.x / camRef.z, y: camRef.y + p.y / camRef.z };
+    }
+
+    function getWorldFitMinZoom() {
+      // Enforce: viewport (world units) never exceeds world size
+      const rect = getRect();
+      const minZx = rect.width / WORLD_W;
+      const minZy = rect.height / WORLD_H;
+      return Math.max(minZx, minZy);
+    }
+
+    function applyZoomLimits() {
+      const minFit = getWorldFitMinZoom();
+      const effectiveMin = Math.max(MIN_ZOOM_ABS, minFit);
+      cam.z = clamp(cam.z, effectiveMin, MAX_ZOOM);
+    }
+
+    function getViewWorldSize() {
+      const rect = getRect();
+      return { w: rect.width / cam.z, h: rect.height / cam.z };
+    }
+
+    function centerCamera() {
       applyZoomLimits();
-      clampCameraToWorld();
+      const view = getViewWorldSize();
+      cam.x = (WORLD_W - view.w) / 2;
+      cam.y = (WORLD_H - view.h) / 2;
     }
 
-    draw();
-  }
-
-  function getMouseScreen(e) {
-    const r = getRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-  }
-
-  function screenToWorld(p) {
-    return { x: cam.x + p.x / cam.z, y: cam.y + p.y / cam.z };
-  }
-
-  function worldToScreen(p) {
-    return { x: (p.x - cam.x) * cam.z, y: (p.y - cam.y) * cam.z };
-  }
-
-  function clear() {
-    const r = getRect();
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, r.width, r.height);
-  }
-
-  function drawVersion() {
-    ctx.save();
-    ctx.fillStyle = "#fff";
-    ctx.font = "14px system-ui, sans-serif";
-    ctx.textBaseline = "top";
-    ctx.fillText(`RUNNING: ${VERSION}`, 10, 10);
-    ctx.restore();
-  }
-
-  function drawFilledCircleWorld(x, y, r) {
-    const s = worldToScreen({ x, y });
-    const sr = r * cam.z;
-    ctx.save();
-    ctx.fillStyle = "#fff";
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, Math.max(0, sr), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawPreviewCircleWorld(x, y, r) {
-    const s = worldToScreen({ x, y });
-    const sr = r * cam.z;
-    ctx.save();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 6]);
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, Math.max(0, sr), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawCenterDotWorld(x, y) {
-    const s = worldToScreen({ x, y });
-    ctx.save();
-    ctx.fillStyle = "#fff";
-    ctx.globalAlpha = 0.8;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function draw() {
-    clear();
-
-    for (const c of circles) {
-      drawFilledCircleWorld(c.x, c.y, c.r);
+    function clampCameraToWorld() {
+      // With zoom limited, view is always <= world, so these are valid.
+      const view = getViewWorldSize();
+      cam.x = clamp(cam.x, 0, WORLD_W - view.w);
+      cam.y = clamp(cam.y, 0, WORLD_H - view.h);
     }
 
-    if (placing) {
-      drawCenterDotWorld(placeCenter.x, placeCenter.y);
-      drawPreviewCircleWorld(placeCenter.x, placeCenter.y, placeR);
-    }
+    function resize() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const rect = getRect();
 
-    drawVersion();
-  }
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  function findCircleAtScreenPoint(pScreen) {
-    const pWorld = screenToWorld(pScreen);
-
-    for (let i = circles.length - 1; i >= 0; i--) {
-      const c = circles[i];
-      const dx = pWorld.x - c.x;
-      const dy = pWorld.y - c.y;
-      const d = Math.hypot(dx, dy);
-
-      const padWorld = HIT_PAD_PX / cam.z;
-      if (d <= c.r + padWorld) return i;
-    }
-    return -1;
-  }
-
-  // =========================
-  // INPUT
-  // =========================
-
-  // Stop middle-click autoscroll
-  canvas.addEventListener("auxclick", (e) => {
-    if (e.button === 1) e.preventDefault();
-  });
-
-  canvas.addEventListener("mousedown", (e) => {
-    const p = getMouseScreen(e);
-    lastMouseScreen = p;
-
-    // Middle mouse drag = pan
-    if (e.button === 1) {
-      e.preventDefault();
-      panning = true;
-      panStartMouse = p;
-      panStartCam = { x: cam.x, y: cam.y };
-      return;
-    }
-
-    // Left mouse = drag circle (if hit)
-    if (e.button !== 0) return;
-    if (placing) return;
-
-    const hit = findCircleAtScreenPoint(p);
-    if (hit !== -1) {
-      draggingCircle = true;
-
-      // bring to top visually
-      const picked = circles.splice(hit, 1)[0];
-      circles.push(picked);
-      dragIndex = circles.length - 1;
-
-      const w = screenToWorld(p);
-      dragOffset.x = circles[dragIndex].x - w.x;
-      dragOffset.y = circles[dragIndex].y - w.y;
+      if (!didInitCenter) {
+        centerCamera();
+        didInitCenter = true;
+      } else {
+        applyZoomLimits();
+        clampCameraToWorld();
+      }
 
       draw();
     }
-  });
 
-  canvas.addEventListener("mousemove", (e) => {
-    const p = getMouseScreen(e);
-    lastMouseScreen = p;
-
-    if (panning) {
-      const dx = p.x - panStartMouse.x;
-      const dy = p.y - panStartMouse.y;
-
-      cam.x = panStartCam.x - dx / cam.z;
-      cam.y = panStartCam.y - dy / cam.z;
-
-      clampCameraToWorld();
-      draw();
-      return;
+    function draw() {
+      renderer.beginFrame(ctx, canvas);
+      sketcher.draw(ctx, cam, worldToScreen);
+      renderer.drawVersion(ctx);
     }
 
-    if (draggingCircle) {
-      const w = screenToWorld(p);
-      const c = circles[dragIndex];
-      c.x = w.x + dragOffset.x;
-      c.y = w.y + dragOffset.y;
+    // Stop middle-click autoscroll icon behavior
+    canvas.addEventListener("auxclick", (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
 
-      // keep circles inside world bounds
-      c.x = clamp(c.x, 0, WORLD_W);
-      c.y = clamp(c.y, 0, WORLD_H);
+    canvas.addEventListener("mousedown", (e) => {
+      const pScreen = getMouseScreen(e);
 
-      draw();
-      return;
-    }
+      // Middle mouse drag = pan
+      if (e.button === 1) {
+        e.preventDefault();
+        panning = true;
+        panStartMouse = pScreen;
+        panStartCam = { x: cam.x, y: cam.y };
+        return;
+      }
 
-    if (placing) {
-      const w = screenToWorld(p);
-      placeR = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
-      draw();
-    }
-  });
+      // Left mouse: drag circle if hit (sketcher owns that)
+      if (e.button === 0) {
+        const pWorld = screenToWorld(pScreen);
+        const consumed = sketcher.beginDragIfHit(pWorld, cam.z);
+        if (consumed) draw();
+      }
+    });
 
-  window.addEventListener("mouseup", (e) => {
-    if (e.button === 1) {
-      panning = false;
-      draw();
-      return;
-    }
-    if (e.button === 0) {
-      if (draggingCircle) {
-        draggingCircle = false;
-        dragIndex = -1;
+    canvas.addEventListener("mousemove", (e) => {
+      const pScreen = getMouseScreen(e);
+      const pWorld = screenToWorld(pScreen);
+
+      if (panning) {
+        const dx = pScreen.x - panStartMouse.x;
+        const dy = pScreen.y - panStartMouse.y;
+
+        cam.x = panStartCam.x - dx / cam.z;
+        cam.y = panStartCam.y - dy / cam.z;
+
+        clampCameraToWorld();
+        draw();
+        return;
+      }
+
+      if (sketcher.isDragging()) {
+        sketcher.updateDrag(pWorld, WORLD_W, WORLD_H);
+        draw();
+        return;
+      }
+
+      if (sketcher.isPlacing()) {
+        sketcher.updatePlacing(pWorld);
         draw();
       }
-    }
-  });
+    });
 
-  // Left click to place center / finalize
-  canvas.addEventListener("click", (e) => {
-    if (panning || draggingCircle) return;
-    if (e.button !== 0) return;
+    window.addEventListener("mouseup", (e) => {
+      if (e.button === 1) {
+        panning = false;
+        draw();
+        return;
+      }
+      if (e.button === 0) {
+        if (sketcher.isDragging()) {
+          sketcher.endDrag();
+          draw();
+        }
+      }
+    });
 
-    const p = getMouseScreen(e);
+    // Left click to place center / finalize (two-click)
+    canvas.addEventListener("click", (e) => {
+      if (e.button !== 0) return;
+      if (panning) return;
+      if (sketcher.isDragging()) return;
 
-    // If clicking a circle while not placing, do nothing
-    if (!placing) {
-      const hit = findCircleAtScreenPoint(p);
-      if (hit !== -1) return;
+      const pWorld = screenToWorld(getMouseScreen(e));
 
-      placing = true;
-      placeCenter = screenToWorld(p);
-      placeR = 0;
+      // If not placing, ignore click if it's on a circle (so dragging is clean)
+      if (!sketcher.isPlacing()) {
+        const hit = sketcher.hitTestCircleAtWorldPoint(pWorld, cam.z);
+        if (hit !== -1) return;
+
+        sketcher.startPlacing(pWorld);
+        draw();
+        return;
+      }
+
+      sketcher.finalizePlacing(pWorld);
       draw();
-      return;
-    }
+    });
 
-    const w = screenToWorld(p);
-    const r = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
-    if (r > 1) circles.push({ x: placeCenter.x, y: placeCenter.y, r });
-
-    placing = false;
-    placeR = 0;
-    draw();
-  });
-
-  // Zoom at cursor (but never allow zoom-out beyond world size)
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-
-    const p = getMouseScreen(e);
-    const before = screenToWorld(p);
-
-    const zoomFactor = Math.exp(-e.deltaY * 0.001);
-    cam.z *= zoomFactor;
-
-    // Enforce: viewport cannot exceed world size
-    applyZoomLimits();
-
-    const after = screenToWorld(p);
-
-    // keep cursor pinned to the same world point
-    cam.x += before.x - after.x;
-    cam.y += before.y - after.y;
-
-    clampCameraToWorld();
-
-    // keep preview consistent
-    if (placing) {
-      const w = screenToWorld(p);
-      placeR = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
-    }
-
-    draw();
-  }, { passive: false });
-
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      placing = false;
-      placeR = 0;
-      draggingCircle = false;
-      dragIndex = -1;
-      panning = false;
-      draw();
-    }
-
-    if (e.key === "Backspace") {
+    // Zoom at cursor (never beyond world fit)
+    canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
-      circles.pop();
-      draw();
-    }
 
-    // Press "C" to re-center camera
-    if (e.key.toLowerCase() === "c") {
-      centerCameraInWorld();
+      const pScreen = getMouseScreen(e);
+      const before = screenToWorld(pScreen);
+
+      const zoomFactor = Math.exp(-e.deltaY * 0.001);
+      cam.z *= zoomFactor;
+
+      applyZoomLimits();
+
+      const after = screenToWorld(pScreen);
+
+      // keep cursor pinned
+      cam.x += before.x - after.x;
+      cam.y += before.y - after.y;
+
       clampCameraToWorld();
+
+      // keep preview consistent while zooming
+      if (sketcher.isPlacing()) {
+        sketcher.updatePlacing(screenToWorld(pScreen));
+      }
+
       draw();
-    }
-  }, { passive: false });
+    }, { passive: false });
 
-  window.addEventListener("resize", resize);
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        sketcher.cancelPlacing();
+        sketcher.endDrag();
+        panning = false;
+        draw();
+      }
 
-  // Init
-  resize();
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        sketcher.undo();
+        draw();
+      }
+
+      if (e.key.toLowerCase() === "c") {
+        centerCamera();
+        clampCameraToWorld();
+        draw();
+      }
+    }, { passive: false });
+
+    window.addEventListener("resize", resize);
+
+    resize();
+  }
+
+  boot().catch((err) => {
+    console.error(err);
+    alert(String(err));
+  });
 })();
