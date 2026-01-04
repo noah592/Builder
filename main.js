@@ -110,7 +110,7 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       // Rendering the mask benefits from smoothing when zoomed out.
-      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingEnabled = false;
 
       if (!didInitCenter) {
         centerCamera();
