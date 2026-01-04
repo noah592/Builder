@@ -243,7 +243,13 @@
           const sw = TILE_SIZE * cam.z;
           const sh = TILE_SIZE * cam.z;
 
-          ctx.drawImage(t.canvas, sx, sy, sw, sh);
+         // SNAP TO INTEGER SCREEN PIXELS
+const sxI = Math.round(sx);
+const syI = Math.round(sy);
+const swI = Math.round(sw);
+const shI = Math.round(sh);
+
+ctx.drawImage(t.canvas, sxI, syI, swI, shI);
         }
       }
     }
