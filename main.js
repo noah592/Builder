@@ -2,9 +2,9 @@
   // =========================
   // CONFIG / BASELINES
   // =========================
-  const VERSION = "v0.2.0 (2026-01-03)";
+  const VERSION = "v0.2.1 (2026-01-03)";
 
-  // World size baseline (your new default)
+  // World size baseline
   const WORLD_W = 50000;
   const WORLD_H = 5000;
 
@@ -26,10 +26,8 @@
   }
 
   async function boot() {
-    // Load modules (globals) without touching index.html
     await loadScript("renderer.js");
     await loadScript("sketcher.js");
-
     startApp();
   }
 
@@ -219,54 +217,75 @@
       draw();
     });
 
-    // Zoom at cursor (never beyond world fit)
-    canvas.addEventListener("wheel", (e) => {
-      e.preventDefault();
-
-      const pScreen = getMouseScreen(e);
-      const before = screenToWorld(pScreen);
-
-      const zoomFactor = Math.exp(-e.deltaY * 0.001);
-      cam.z *= zoomFactor;
-
-      applyZoomLimits();
-
-      const after = screenToWorld(pScreen);
-
-      // keep cursor pinned
-      cam.x += before.x - after.x;
-      cam.y += before.y - after.y;
-
-      clampCameraToWorld();
-
-      // keep preview consistent while zooming
-      if (sketcher.isPlacing()) {
-        sketcher.updatePlacing(screenToWorld(pScreen));
-      }
-
-      draw();
-    }, { passive: false });
-
-    window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        sketcher.cancelPlacing();
-        sketcher.endDrag();
-        panning = false;
-        draw();
-      }
-
-      if (e.key === "Backspace") {
+    // Zoom at cursor (uses ACTUAL applied zoom to avoid snapping at min zoom)
+    canvas.addEventListener(
+      "wheel",
+      (e) => {
         e.preventDefault();
-        sketcher.undo();
-        draw();
-      }
 
-      if (e.key.toLowerCase() === "c") {
-        centerCamera();
+        const pScreen = getMouseScreen(e);
+
+        // World point under cursor before zoom
+        const before = screenToWorld(pScreen);
+
+        // Compute desired zoom, then clamp, then compute what actually happened.
+        const z0 = cam.z;
+        const zoomFactor = Math.exp(-e.deltaY * 0.001);
+
+        cam.z = z0 * zoomFactor;
+        applyZoomLimits();
+
+        const z1 = cam.z;
+        const applied = z1 / z0;
+
+        // If we hit a clamp boundary, applied may be 1 (or close),
+        // so we avoid shifting the camera as if zoom happened.
+        if (applied !== 1) {
+          // Keep the cursor pinned: after zoom, cam should move so 'before' stays under pScreen.
+          // Derivation:
+          //   before.x = cam.x + pScreen.x / z0
+          //   want: before.x = cam'.x + pScreen.x / z1
+          //   => cam'.x = before.x - pScreen.x / z1
+          cam.x = before.x - pScreen.x / z1;
+          cam.y = before.y - pScreen.y / z1;
+        }
+
         clampCameraToWorld();
+
+        // keep preview consistent while zooming
+        if (sketcher.isPlacing()) {
+          sketcher.updatePlacing(screenToWorld(pScreen));
+        }
+
         draw();
-      }
-    }, { passive: false });
+      },
+      { passive: false }
+    );
+
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === "Escape") {
+          sketcher.cancelPlacing();
+          sketcher.endDrag();
+          panning = false;
+          draw();
+        }
+
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          sketcher.undo();
+          draw();
+        }
+
+        if (e.key.toLowerCase() === "c") {
+          centerCamera();
+          clampCameraToWorld();
+          draw();
+        }
+      },
+      { passive: false }
+    );
 
     window.addEventListener("resize", resize);
 
