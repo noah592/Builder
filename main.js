@@ -1,139 +1,115 @@
-(() => {
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d", { alpha: false });
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d", { alpha: false });
 
-  // Stored circles
-  /** @type {{x:number,y:number,r:number}[]} */
-  const circles = [];
+const circles = [];
 
-  // In-progress circle state
-  let isPlacing = false;
-  let center = { x: 0, y: 0 };
-  let currentR = 0;
+let placing = false;
+let center = { x: 0, y: 0 };
+let radius = 0;
 
-  function resizeCanvas() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width * dpr));
-    const h = Math.max(1, Math.floor(rect.height * dpr));
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      // Use CSS pixels for drawing
-      ctx.scale(dpr, dpr);
-    }
-    draw();
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function mousePos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function clear() {
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawFilledCircle(x, y, r) {
+  ctx.fillStyle = "white";
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawPreviewCircle(x, y, r) {
+  ctx.strokeStyle = "white";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawCenterDot(x, y) {
+  ctx.fillStyle = "white";
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw() {
+  clear();
+
+  // finalized circles (solid)
+  for (const c of circles) {
+    drawFilledCircle(c.x, c.y, c.r);
   }
 
-  function getMousePos(e) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+  // preview
+  if (placing) {
+    drawCenterDot(center.x, center.y);
+    drawPreviewCircle(center.x, center.y, radius);
   }
+}
 
-  function dist(a, b) {
-    const dx = a.x - b.x;
-    const dy = a.y - b.y;
-    return Math.hypot(dx, dy);
-  }
+canvas.addEventListener("click", (e) => {
+  const p = mousePos(e);
 
-  function clear() {
-    // Because alpha:false, this is a fast solid clear
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-  }
+  if (!placing) {
+    center = p;
+    radius = 0;
+    placing = true;
+  } else {
+    const dx = p.x - center.x;
+    const dy = p.y - center.y;
+    const r = Math.hypot(dx, dy);
 
-  function drawCircle(x, y, r, opts = {}) {
-    const { dashed = false, alpha = 1 } = opts;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2;
-    if (dashed) ctx.setLineDash([6, 6]);
-
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(0, r), 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawCenterDot(x, y) {
-    ctx.save();
-    ctx.fillStyle = "#fff";
-    ctx.globalAlpha = 0.8;
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function draw() {
-    clear();
-
-    // Draw stored circles
-    for (const c of circles) {
-      drawCircle(c.x, c.y, c.r);
-    }
-
-    // Draw preview
-    if (isPlacing) {
-      drawCenterDot(center.x, center.y);
-      drawCircle(center.x, center.y, currentR, { dashed: true, alpha: 0.9 });
-    }
-  }
-
-  // Input
-  canvas.addEventListener("click", (e) => {
-    const p = getMousePos(e);
-
-    if (!isPlacing) {
-      // First click: set center
-      isPlacing = true;
-      center = p;
-      currentR = 0;
-      draw();
-      return;
-    }
-
-    // Second click: finalize circle
-    const r = dist(center, p);
-    if (r > 0.5) {
+    if (r > 1) {
       circles.push({ x: center.x, y: center.y, r });
     }
-    isPlacing = false;
-    currentR = 0;
+
+    placing = false;
+    radius = 0;
+  }
+
+  draw();
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  if (!placing) return;
+  const p = mousePos(e);
+  radius = Math.hypot(p.x - center.x, p.y - center.y);
+  draw();
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    placing = false;
+    radius = 0;
     draw();
-  });
+  }
 
-  canvas.addEventListener("mousemove", (e) => {
-    if (!isPlacing) return;
-    const p = getMousePos(e);
-    currentR = dist(center, p);
+  if (e.key === "Backspace") {
+    e.preventDefault();
+    circles.pop();
     draw();
-  });
+  }
+});
 
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      if (isPlacing) {
-        isPlacing = false;
-        currentR = 0;
-        draw();
-      }
-    }
-
-    if (e.key === "Backspace") {
-      // prevent browser navigation
-      e.preventDefault();
-      circles.pop();
-      draw();
-    }
-  }, { passive: false });
-
-  window.addEventListener("resize", resizeCanvas);
-
-  // Init
-  resizeCanvas();
-})();
+window.addEventListener("resize", resize);
+resize();
