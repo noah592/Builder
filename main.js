@@ -2,7 +2,7 @@
   // =========================
   // CONFIG
   // =========================
-  const VERSION = "v0.1.3 (2026-01-03)";
+  const VERSION = "v0.1.4 (2026-01-03)";
 
   // World size (world units)
   const WORLD_W = 3000;
@@ -10,12 +10,8 @@
 
   // Interaction tuning
   const HIT_PAD_PX = 6;
-  const MIN_ZOOM = 0.1;
+  const MIN_ZOOM = 0.1;  // absolute safety min (will be overridden by world-fit min if larger)
   const MAX_ZOOM = 8;
-
-  // If true, the camera will re-center on resize when the viewport becomes larger than the world.
-  // (It already recenters in that case regardless; this just keeps behavior stable.)
-  const RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD = true;
 
   // =========================
   // SETUP
@@ -26,10 +22,9 @@
   const cam = {
     x: 0,
     y: 0,
-    z: 1.0, // starting zoom
+    z: 1.0,
   };
 
-  // circles stored in WORLD coords
   const circles = []; // {x,y,r}
 
   // New circle placement (two-click)
@@ -48,63 +43,66 @@
   let panStartCam = { x: 0, y: 0 };
 
   let lastMouseScreen = { x: 0, y: 0 };
-
-  // One-time init so we center the camera on first resize
   let didInitCenter = false;
 
   function clamp(v, a, b) {
     return Math.max(a, Math.min(b, v));
   }
 
-  function getViewSizeWorld() {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      w: rect.width / cam.z,
-      h: rect.height / cam.z,
-      rect,
-    };
+  function getRect() {
+    return canvas.getBoundingClientRect();
+  }
+
+  function getViewWorldSize() {
+    const rect = getRect();
+    return { w: rect.width / cam.z, h: rect.height / cam.z };
+  }
+
+  function getWorldFitMinZoom() {
+    // Ensure the viewport in world units never exceeds the world size:
+    // rect.width / z <= WORLD_W  =>  z >= rect.width / WORLD_W
+    // rect.height / z <= WORLD_H =>  z >= rect.height / WORLD_H
+    const rect = getRect();
+    const minZx = rect.width / WORLD_W;
+    const minZy = rect.height / WORLD_H;
+    return Math.max(minZx, minZy);
+  }
+
+  function applyZoomLimits() {
+    const worldFitMin = getWorldFitMinZoom();
+    const effectiveMin = Math.max(MIN_ZOOM, worldFitMin);
+    cam.z = clamp(cam.z, effectiveMin, MAX_ZOOM);
   }
 
   function centerCameraInWorld() {
-    const { w: viewW, h: viewH } = getViewSizeWorld();
-    cam.x = (WORLD_W - viewW) / 2;
-    cam.y = (WORLD_H - viewH) / 2;
+    applyZoomLimits();
+    const view = getViewWorldSize();
+    cam.x = (WORLD_W - view.w) / 2;
+    cam.y = (WORLD_H - view.h) / 2;
   }
 
   function clampCameraToWorld() {
-    const { w: viewW, h: viewH } = getViewSizeWorld();
-
-    // If the view is smaller than the world, allow full travel across world extents.
-    // If the view is larger than the world, lock camera to centered position so it doesn't feel "stuck".
-    if (viewW <= WORLD_W) {
-      cam.x = clamp(cam.x, 0, WORLD_W - viewW);
-    } else if (RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD) {
-      cam.x = (WORLD_W - viewW) / 2;
-    }
-
-    if (viewH <= WORLD_H) {
-      cam.y = clamp(cam.y, 0, WORLD_H - viewH);
-    } else if (RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD) {
-      cam.y = (WORLD_H - viewH) / 2;
-    }
+    // With zoom limited so view never exceeds world, these ranges are always valid.
+    const view = getViewWorldSize();
+    cam.x = clamp(cam.x, 0, WORLD_W - view.w);
+    cam.y = clamp(cam.y, 0, WORLD_H - view.h);
   }
 
   function resize() {
     const dpr = Math.max(1, window.devicePixelRatio || 1);
-    const rect = canvas.getBoundingClientRect();
+    const rect = getRect();
 
     canvas.width = Math.round(rect.width * dpr);
     canvas.height = Math.round(rect.height * dpr);
 
-    // Draw in CSS pixels
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Center on first load (after we know viewport size)
     if (!didInitCenter) {
       centerCameraInWorld();
       didInitCenter = true;
     } else {
-      // Keep camera valid after resizing
+      // On resize, enforce zoom limits, then clamp camera.
+      applyZoomLimits();
       clampCameraToWorld();
     }
 
@@ -112,7 +110,7 @@
   }
 
   function getMouseScreen(e) {
-    const r = canvas.getBoundingClientRect();
+    const r = getRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
@@ -125,7 +123,7 @@
   }
 
   function clear() {
-    const r = canvas.getBoundingClientRect();
+    const r = getRect();
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, r.width, r.height);
   }
@@ -142,7 +140,6 @@
   function drawFilledCircleWorld(x, y, r) {
     const s = worldToScreen({ x, y });
     const sr = r * cam.z;
-
     ctx.save();
     ctx.fillStyle = "#fff";
     ctx.beginPath();
@@ -154,7 +151,6 @@
   function drawPreviewCircleWorld(x, y, r) {
     const s = worldToScreen({ x, y });
     const sr = r * cam.z;
-
     ctx.save();
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 2;
@@ -271,7 +267,7 @@
       c.x = w.x + dragOffset.x;
       c.y = w.y + dragOffset.y;
 
-      // Optional: keep circles within the world bounds
+      // keep circles inside world bounds
       c.x = clamp(c.x, 0, WORLD_W);
       c.y = clamp(c.y, 0, WORLD_H);
 
@@ -329,7 +325,7 @@
     draw();
   });
 
-  // Zoom at cursor
+  // Zoom at cursor (but never allow zoom-out beyond world size)
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
 
@@ -337,7 +333,10 @@
     const before = screenToWorld(p);
 
     const zoomFactor = Math.exp(-e.deltaY * 0.001);
-    cam.z = clamp(cam.z * zoomFactor, MIN_ZOOM, MAX_ZOOM);
+    cam.z *= zoomFactor;
+
+    // Enforce: viewport cannot exceed world size
+    applyZoomLimits();
 
     const after = screenToWorld(p);
 
@@ -372,7 +371,7 @@
       draw();
     }
 
-    // Optional: press "C" to re-center camera anytime
+    // Press "C" to re-center camera
     if (e.key.toLowerCase() === "c") {
       centerCameraInWorld();
       clampCameraToWorld();
