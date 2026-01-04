@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Circle Draw</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="app" aria-label="Circle drawing area">
+    <div id="hud">
+      <div><span class="k">Click</span> set center</div>
+      <div><span class="k">Move</span> set radius</div>
+      <div><span class="k">Click</span> finalize circle</div>
+      <div class="small"><span class="k">Esc</span> cancel in-progress</div>
+      <div class="small"><span class="k">Backspace</span> undo last</div>
+    </div>
+    <canvas id="c"></canvas>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>
