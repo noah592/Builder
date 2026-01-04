@@ -2,16 +2,20 @@
   // =========================
   // CONFIG
   // =========================
-  const VERSION = "v0.1.2 (2026-01-03)";
+  const VERSION = "v0.1.3 (2026-01-03)";
 
-  // Changeable world size (world units)
+  // World size (world units)
   const WORLD_W = 3000;
   const WORLD_H = 2000;
 
   // Interaction tuning
-  const HIT_PAD_PX = 6;   // extra hit padding in screen px
+  const HIT_PAD_PX = 6;
   const MIN_ZOOM = 0.1;
   const MAX_ZOOM = 8;
+
+  // If true, the camera will re-center on resize when the viewport becomes larger than the world.
+  // (It already recenters in that case regardless; this just keeps behavior stable.)
+  const RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD = true;
 
   // =========================
   // SETUP
@@ -22,7 +26,7 @@
   const cam = {
     x: 0,
     y: 0,
-    z: 1.0, // starting zoom stays the same
+    z: 1.0, // starting zoom
   };
 
   // circles stored in WORLD coords
@@ -43,11 +47,46 @@
   let panStartMouse = { x: 0, y: 0 };
   let panStartCam = { x: 0, y: 0 };
 
-  // Track last mouse for preview updates
   let lastMouseScreen = { x: 0, y: 0 };
+
+  // One-time init so we center the camera on first resize
+  let didInitCenter = false;
 
   function clamp(v, a, b) {
     return Math.max(a, Math.min(b, v));
+  }
+
+  function getViewSizeWorld() {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      w: rect.width / cam.z,
+      h: rect.height / cam.z,
+      rect,
+    };
+  }
+
+  function centerCameraInWorld() {
+    const { w: viewW, h: viewH } = getViewSizeWorld();
+    cam.x = (WORLD_W - viewW) / 2;
+    cam.y = (WORLD_H - viewH) / 2;
+  }
+
+  function clampCameraToWorld() {
+    const { w: viewW, h: viewH } = getViewSizeWorld();
+
+    // If the view is smaller than the world, allow full travel across world extents.
+    // If the view is larger than the world, lock camera to centered position so it doesn't feel "stuck".
+    if (viewW <= WORLD_W) {
+      cam.x = clamp(cam.x, 0, WORLD_W - viewW);
+    } else if (RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD) {
+      cam.x = (WORLD_W - viewW) / 2;
+    }
+
+    if (viewH <= WORLD_H) {
+      cam.y = clamp(cam.y, 0, WORLD_H - viewH);
+    } else if (RECENTER_WHEN_VIEW_BIGGER_THAN_WORLD) {
+      cam.y = (WORLD_H - viewH) / 2;
+    }
   }
 
   function resize() {
@@ -59,6 +98,16 @@
 
     // Draw in CSS pixels
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // Center on first load (after we know viewport size)
+    if (!didInitCenter) {
+      centerCameraInWorld();
+      didInitCenter = true;
+    } else {
+      // Keep camera valid after resizing
+      clampCameraToWorld();
+    }
+
     draw();
   }
 
@@ -130,18 +179,15 @@
   function draw() {
     clear();
 
-    // Final circles (filled)
     for (const c of circles) {
       drawFilledCircleWorld(c.x, c.y, c.r);
     }
 
-    // Preview circle (outline only)
     if (placing) {
       drawCenterDotWorld(placeCenter.x, placeCenter.y);
       drawPreviewCircleWorld(placeCenter.x, placeCenter.y, placeR);
     }
 
-    // Single version label
     drawVersion();
   }
 
@@ -160,23 +206,6 @@
     return -1;
   }
 
-  function clampCameraToWorld() {
-    // Keep camera "around" the world, but allow some overscroll margin.
-    const rect = canvas.getBoundingClientRect();
-    const viewW = rect.width / cam.z;
-    const viewH = rect.height / cam.z;
-
-    const margin = 200 / cam.z;
-
-    const minX = -margin;
-    const minY = -margin;
-    const maxX = WORLD_W - viewW + margin;
-    const maxY = WORLD_H - viewH + margin;
-
-    cam.x = clamp(cam.x, minX, maxX);
-    cam.y = clamp(cam.y, minY, maxY);
-  }
-
   // =========================
   // INPUT
   // =========================
@@ -190,7 +219,7 @@
     const p = getMouseScreen(e);
     lastMouseScreen = p;
 
-    // Middle mouse drag = pan in 2D
+    // Middle mouse drag = pan
     if (e.button === 1) {
       e.preventDefault();
       panning = true;
@@ -199,9 +228,8 @@
       return;
     }
 
-    // Left mouse = drag circle (if hit), otherwise just let click handler manage circle placement
+    // Left mouse = drag circle (if hit)
     if (e.button !== 0) return;
-
     if (placing) return;
 
     const hit = findCircleAtScreenPoint(p);
@@ -229,7 +257,6 @@
       const dx = p.x - panStartMouse.x;
       const dy = p.y - panStartMouse.y;
 
-      // 2D pan: both axes update
       cam.x = panStartCam.x - dx / cam.z;
       cam.y = panStartCam.y - dy / cam.z;
 
@@ -243,6 +270,11 @@
       const c = circles[dragIndex];
       c.x = w.x + dragOffset.x;
       c.y = w.y + dragOffset.y;
+
+      // Optional: keep circles within the world bounds
+      c.x = clamp(c.x, 0, WORLD_W);
+      c.y = clamp(c.y, 0, WORLD_H);
+
       draw();
       return;
     }
@@ -271,18 +303,16 @@
 
   // Left click to place center / finalize
   canvas.addEventListener("click", (e) => {
-    // Ignore click if it came from dragging a circle or panning
     if (panning || draggingCircle) return;
     if (e.button !== 0) return;
 
     const p = getMouseScreen(e);
 
-    // If clicking on a circle while not placing, do nothing (so you can drag it instead)
+    // If clicking a circle while not placing, do nothing
     if (!placing) {
       const hit = findCircleAtScreenPoint(p);
       if (hit !== -1) return;
 
-      // First click: set center
       placing = true;
       placeCenter = screenToWorld(p);
       placeR = 0;
@@ -290,7 +320,6 @@
       return;
     }
 
-    // Second click: finalize
     const w = screenToWorld(p);
     const r = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
     if (r > 1) circles.push({ x: placeCenter.x, y: placeCenter.y, r });
@@ -311,12 +340,14 @@
     cam.z = clamp(cam.z * zoomFactor, MIN_ZOOM, MAX_ZOOM);
 
     const after = screenToWorld(p);
+
+    // keep cursor pinned to the same world point
     cam.x += before.x - after.x;
     cam.y += before.y - after.y;
 
     clampCameraToWorld();
 
-    // keep preview consistent while zooming
+    // keep preview consistent
     if (placing) {
       const w = screenToWorld(p);
       placeR = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
@@ -338,6 +369,13 @@
     if (e.key === "Backspace") {
       e.preventDefault();
       circles.pop();
+      draw();
+    }
+
+    // Optional: press "C" to re-center camera anytime
+    if (e.key.toLowerCase() === "c") {
+      centerCameraInWorld();
+      clampCameraToWorld();
       draw();
     }
   }, { passive: false });
