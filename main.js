@@ -5,8 +5,8 @@
   const VERSION = "v0.4.0 (bodies module)";
 
   // World size baseline
-  const WORLD_W = 50000;
-  const WORLD_H = 5000;
+  const WORLD_W = 500000;
+  const WORLD_H = 50000;
 
   // Camera zoom limits
   const MIN_ZOOM_ABS = 0.02; // safety floor
