@@ -4,9 +4,9 @@ html, body {
 }
 
 body {
-  background: black;
+  background: #000;
   overflow: hidden;
-  font-family: system-ui, sans-serif;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
 #app {
@@ -15,25 +15,9 @@ body {
   height: 100vh;
 }
 
-canvas {
+#c {
   width: 100%;
   height: 100%;
   display: block;
   cursor: crosshair;
-}
-
-#hud {
-  position: absolute;
-  top: 12px;
-  left: 14px;
-  color: white;
-  font-size: 14px;
-  line-height: 1.35;
-  pointer-events: none;
-}
-
-#hud .small {
-  font-size: 12px;
-  opacity: 0.8;
-  margin-top: 6px;
 }
