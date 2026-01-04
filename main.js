@@ -2,14 +2,14 @@
   // =========================
   // CONFIG / BASELINES
   // =========================
-  const VERSION = "v0.2.1 (2026-01-03)";
+  const VERSION = "v0.3.0 (2026-01-03)";
 
   // World size baseline
   const WORLD_W = 50000;
   const WORLD_H = 5000;
 
   // Camera zoom limits
-  const MIN_ZOOM_ABS = 0.1; // safety
+  const MIN_ZOOM_ABS = 0.1;
   const MAX_ZOOM = 8;
 
   // =========================
@@ -71,7 +71,6 @@
     }
 
     function getWorldFitMinZoom() {
-      // Enforce: viewport (world units) never exceeds world size
       const rect = getRect();
       const minZx = rect.width / WORLD_W;
       const minZy = rect.height / WORLD_H;
@@ -97,7 +96,6 @@
     }
 
     function clampCameraToWorld() {
-      // With zoom limited, view is always <= world, so these are valid.
       const view = getViewWorldSize();
       cam.x = clamp(cam.x, 0, WORLD_W - view.w);
       cam.y = clamp(cam.y, 0, WORLD_H - view.h);
@@ -110,6 +108,9 @@
       canvas.width = Math.round(rect.width * dpr);
       canvas.height = Math.round(rect.height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // Rendering the mask benefits from smoothing when zoomed out.
+      ctx.imageSmoothingEnabled = true;
 
       if (!didInitCenter) {
         centerCamera();
@@ -145,7 +146,7 @@
         return;
       }
 
-      // Left mouse: drag circle if hit (sketcher owns that)
+      // Left mouse: (dragging shapes disabled in raster mode; kept for future tools)
       if (e.button === 0) {
         const pWorld = screenToWorld(pScreen);
         const consumed = sketcher.beginDragIfHit(pWorld, cam.z);
@@ -203,8 +204,8 @@
 
       const pWorld = screenToWorld(getMouseScreen(e));
 
-      // If not placing, ignore click if it's on a circle (so dragging is clean)
       if (!sketcher.isPlacing()) {
+        // In raster mode, this will always be -1, but left as compatibility.
         const hit = sketcher.hitTestCircleAtWorldPoint(pWorld, cam.z);
         if (hit !== -1) return;
 
@@ -217,18 +218,15 @@
       draw();
     });
 
-    // Zoom at cursor (uses ACTUAL applied zoom to avoid snapping at min zoom)
+    // Zoom at cursor (uses actual applied zoom; no big snap at min zoom)
     canvas.addEventListener(
       "wheel",
       (e) => {
         e.preventDefault();
 
         const pScreen = getMouseScreen(e);
-
-        // World point under cursor before zoom
         const before = screenToWorld(pScreen);
 
-        // Compute desired zoom, then clamp, then compute what actually happened.
         const z0 = cam.z;
         const zoomFactor = Math.exp(-e.deltaY * 0.001);
 
@@ -238,21 +236,13 @@
         const z1 = cam.z;
         const applied = z1 / z0;
 
-        // If we hit a clamp boundary, applied may be 1 (or close),
-        // so we avoid shifting the camera as if zoom happened.
         if (applied !== 1) {
-          // Keep the cursor pinned: after zoom, cam should move so 'before' stays under pScreen.
-          // Derivation:
-          //   before.x = cam.x + pScreen.x / z0
-          //   want: before.x = cam'.x + pScreen.x / z1
-          //   => cam'.x = before.x - pScreen.x / z1
           cam.x = before.x - pScreen.x / z1;
           cam.y = before.y - pScreen.y / z1;
         }
 
         clampCameraToWorld();
 
-        // keep preview consistent while zooming
         if (sketcher.isPlacing()) {
           sketcher.updatePlacing(screenToWorld(pScreen));
         }
