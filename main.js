@@ -1,115 +1,70 @@
-const canvas = document.getElementById("c");
-const ctx = canvas.getContext("2d", { alpha: false });
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
 
-const circles = [];
+  const circles = []; // finalized: {x,y,r}
 
-let placing = false;
-let center = { x: 0, y: 0 };
-let radius = 0;
+  let placing = false;
+  let center = { x: 0, y: 0 };
+  let previewR = 0;
 
-function resize() {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
 
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
 
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  draw();
-}
-
-function mousePos(e) {
-  const r = canvas.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
-}
-
-function clear() {
-  ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-
-function drawFilledCircle(x, y, r) {
-  ctx.fillStyle = "white";
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawPreviewCircle(x, y, r) {
-  ctx.strokeStyle = "white";
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6, 6]);
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-}
-
-function drawCenterDot(x, y) {
-  ctx.fillStyle = "white";
-  ctx.beginPath();
-  ctx.arc(x, y, 3, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function draw() {
-  clear();
-
-  // finalized circles (solid)
-  for (const c of circles) {
-    drawFilledCircle(c.x, c.y, c.r);
-  }
-
-  // preview
-  if (placing) {
-    drawCenterDot(center.x, center.y);
-    drawPreviewCircle(center.x, center.y, radius);
-  }
-}
-
-canvas.addEventListener("click", (e) => {
-  const p = mousePos(e);
-
-  if (!placing) {
-    center = p;
-    radius = 0;
-    placing = true;
-  } else {
-    const dx = p.x - center.x;
-    const dy = p.y - center.y;
-    const r = Math.hypot(dx, dy);
-
-    if (r > 1) {
-      circles.push({ x: center.x, y: center.y, r });
-    }
-
-    placing = false;
-    radius = 0;
-  }
-
-  draw();
-});
-
-canvas.addEventListener("mousemove", (e) => {
-  if (!placing) return;
-  const p = mousePos(e);
-  radius = Math.hypot(p.x - center.x, p.y - center.y);
-  draw();
-});
-
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    placing = false;
-    radius = 0;
+    // Draw using CSS pixel coordinates
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     draw();
   }
 
-  if (e.key === "Backspace") {
-    e.preventDefault();
-    circles.pop();
-    draw();
+  function getMouse(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
-});
 
-window.addEventListener("resize", resize);
-resize();
+  function clear() {
+    // Clear in CSS pixel space (since we scaled via setTransform)
+    const w = canvas.getBoundingClientRect().width;
+    const h = canvas.getBoundingClientRect().height;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  function drawFinalCircle(c) {
+    ctx.save();
+    ctx.setLineDash([]);          // ensure no dashes leak in
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+    ctx.fill();                   // <-- SOLID FILL
+    ctx.restore();
+  }
+
+  function drawPreviewCircle(x, y, r) {
+    ctx.save();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCenterDot(x, y) {
+    ctx.save();
+    ctx.fillStyle = "#fff";
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function draw() {
+    clear();
+
+    // finalized circles = FILLED
