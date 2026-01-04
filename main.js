@@ -2,16 +2,14 @@
   // =========================
   // CONFIG
   // =========================
-  const VERSION = "v0.1.0 (2026-01-03)";
+  const VERSION = "v0.1.1 (2026-01-03)";
 
-  // Changeable "world" size (in world units / pixels)
-  // This does NOT change the starting zoom (starts at 1.0).
+  // World size (world units)
   const WORLD_W = 3000;
   const WORLD_H = 2000;
 
   // Interaction tuning
-  const HIT_PAD_PX = 6;          // extra hit padding in screen pixels
-  const PAN_DRAG_THRESHOLD = 4;  // pixels of movement before we treat it as a pan (vs a click)
+  const HIT_PAD_PX = 6;     // extra hit padding in screen px
   const MIN_ZOOM = 0.1;
   const MAX_ZOOM = 8;
 
@@ -21,29 +19,27 @@
   const canvas = document.getElementById("c");
   const ctx = canvas.getContext("2d", { alpha: false });
 
-  // Camera: top-left of viewport in world coords + zoom
   const cam = {
     x: 0,
     y: 0,
-    z: 1.0, // starting zoom stays the same as before
+    z: 1.0, // starting zoom stays the same
   };
 
-  // Circles stored in WORLD coords
+  // circles are stored in WORLD coords
   const circles = []; // {x,y,r}
 
-  // Draw-new-circle state (two-click)
+  // New circle placement (two-click)
   let placing = false;
   let placeCenter = { x: 0, y: 0 };
   let placeR = 0;
 
-  // Drag circle state
+  // Drag existing circle (left mouse)
   let draggingCircle = false;
   let dragIndex = -1;
   let dragOffset = { x: 0, y: 0 };
 
-  // Pan state (click-drag on empty space)
+  // Pan camera (MIDDLE mouse)
   let panning = false;
-  let panCandidate = false;
   let panStartMouse = { x: 0, y: 0 };
   let panStartCam = { x: 0, y: 0 };
 
@@ -61,9 +57,8 @@
     canvas.width = Math.round(rect.width * dpr);
     canvas.height = Math.round(rect.height * dpr);
 
-    // We'll draw in CSS pixels; scale the backing store via transform.
+    // Draw in CSS pixels
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
     draw();
   }
 
@@ -92,6 +87,18 @@
     ctx.font = "14px system-ui, sans-serif";
     ctx.textBaseline = "top";
     ctx.fillText(`RUNNING: ${VERSION}`, 10, 10);
+    ctx.restore();
+  }
+
+  function drawWorldBounds() {
+    const tl = worldToScreen({ x: 0, y: 0 });
+    const br = worldToScreen({ x: WORLD_W, y: WORLD_H });
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 6]);
+    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
     ctx.restore();
   }
 
@@ -132,42 +139,24 @@
     ctx.restore();
   }
 
-  function drawWorldBounds() {
-    // optional subtle border so you can "feel" world size (comment out if you don’t want it)
-    const tl = worldToScreen({ x: 0, y: 0 });
-    const br = worldToScreen({ x: WORLD_W, y: WORLD_H });
-    ctx.save();
-    ctx.globalAlpha = 0.25;
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 6]);
-    ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
-    ctx.restore();
-  }
-
   function draw() {
     clear();
 
-    // World bounds (dashed)
     drawWorldBounds();
 
-    // Final circles (filled)
     for (const c of circles) {
       drawFilledCircleWorld(c.x, c.y, c.r);
     }
 
-    // Preview (outline only)
     if (placing) {
       drawCenterDotWorld(placeCenter.x, placeCenter.y);
       drawPreviewCircleWorld(placeCenter.x, placeCenter.y, placeR);
     }
 
-    // Version label (single)
     drawVersion();
   }
 
   function findCircleAtScreenPoint(pScreen) {
-    // test from topmost (last drawn) to bottom
     const pWorld = screenToWorld(pScreen);
 
     for (let i = circles.length - 1; i >= 0; i--) {
@@ -176,21 +165,18 @@
       const dy = pWorld.y - c.y;
       const d = Math.hypot(dx, dy);
 
-      // padding in screen pixels converted to world units
       const padWorld = HIT_PAD_PX / cam.z;
-
       if (d <= c.r + padWorld) return i;
     }
     return -1;
   }
 
   function clampCameraToWorld() {
-    // Keep camera reasonably within the world (allow a little overscroll)
     const rect = canvas.getBoundingClientRect();
     const viewW = rect.width / cam.z;
     const viewH = rect.height / cam.z;
 
-    const margin = 200 / cam.z; // world-units margin depending on zoom
+    const margin = 200 / cam.z;
 
     const minX = -margin;
     const minY = -margin;
@@ -204,45 +190,63 @@
   // =========================
   // INPUT
   // =========================
+
+  // Prevent middle-click auto-scroll / weirdness
+  canvas.addEventListener("auxclick", (e) => {
+    // auxclick fires for middle/right; prevent browser behavior
+    if (e.button === 1) e.preventDefault();
+  });
+
   canvas.addEventListener("mousedown", (e) => {
     const p = getMouseScreen(e);
     lastMouseScreen = p;
 
-    // Only left mouse for interactions
+    // MIDDLE mouse drag = PAN
+    if (e.button === 1) {
+      e.preventDefault();
+      panning = true;
+      panStartMouse = p;
+      panStartCam = { x: cam.x, y: cam.y };
+      return;
+    }
+
+    // LEFT mouse interactions
     if (e.button !== 0) return;
 
-    // If we are mid-placement, ignore drag/pan/circle drag until the second click
+    // If we're mid placement, ignore mousedown dragging logic
     if (placing) return;
 
+    // Click on circle -> drag it
     const hit = findCircleAtScreenPoint(p);
     if (hit !== -1) {
-      // Start dragging this circle
       draggingCircle = true;
-      dragIndex = hit;
 
-      const w = screenToWorld(p);
-      dragOffset.x = circles[hit].x - w.x;
-      dragOffset.y = circles[hit].y - w.y;
-
-      // bring to top visually by moving to end
+      // bring to top by moving to end
       const picked = circles.splice(hit, 1)[0];
       circles.push(picked);
       dragIndex = circles.length - 1;
 
-      draw();
-      return;
-    }
+      const w = screenToWorld(p);
+      dragOffset.x = circles[dragIndex].x - w.x;
+      dragOffset.y = circles[dragIndex].y - w.y;
 
-    // Not on a circle: candidate for panning OR (if no drag) a click-to-place center.
-    panCandidate = true;
-    panning = false;
-    panStartMouse = p;
-    panStartCam = { x: cam.x, y: cam.y };
+      draw();
+    }
   });
 
   canvas.addEventListener("mousemove", (e) => {
     const p = getMouseScreen(e);
     lastMouseScreen = p;
+
+    if (panning) {
+      const dx = p.x - panStartMouse.x;
+      const dy = p.y - panStartMouse.y;
+      cam.x = panStartCam.x - dx / cam.z;
+      cam.y = panStartCam.y - dy / cam.z;
+      clampCameraToWorld();
+      draw();
+      return;
+    }
 
     if (draggingCircle) {
       const w = screenToWorld(p);
@@ -250,24 +254,6 @@
       c.x = w.x + dragOffset.x;
       c.y = w.y + dragOffset.y;
       draw();
-      return;
-    }
-
-    if (panCandidate) {
-      const dx = p.x - panStartMouse.x;
-      const dy = p.y - panStartMouse.y;
-      const moved = Math.hypot(dx, dy);
-
-      if (!panning && moved >= PAN_DRAG_THRESHOLD) {
-        panning = true;
-      }
-
-      if (panning) {
-        cam.x = panStartCam.x - dx / cam.z;
-        cam.y = panStartCam.y - dy / cam.z;
-        clampCameraToWorld();
-        draw();
-      }
       return;
     }
 
@@ -279,43 +265,46 @@
   });
 
   window.addEventListener("mouseup", (e) => {
-    if (e.button !== 0) return;
-
-    if (draggingCircle) {
-      draggingCircle = false;
-      dragIndex = -1;
+    if (e.button === 1) {
+      panning = false;
       draw();
       return;
     }
 
-    if (panCandidate) {
-      // If we never actually started panning, treat this as a click on empty space:
-      // start placement (first click behavior).
-      if (!panning) {
-        const w = screenToWorld(lastMouseScreen);
-        placing = true;
-        placeCenter = w;
-        placeR = 0;
+    if (e.button === 0) {
+      if (draggingCircle) {
+        draggingCircle = false;
+        dragIndex = -1;
+        draw();
       }
-
-      panCandidate = false;
-      panning = false;
-      draw();
     }
   });
 
-  // Second click to finalize the circle (keeps your original behavior)
+  // LEFT click to place circle center / finalize
   canvas.addEventListener("click", (e) => {
-    // If we were panning or dragging, ignore click events that fire after mouseup
+    // Ignore clicks that happen at end of a drag-pan or drag-circle
     if (panning || draggingCircle) return;
+    if (e.button !== 0) return;
 
     const p = getMouseScreen(e);
 
-    if (!placing) return; // first click is handled by mouseup "click on empty space"
+    // If clicking on a circle and not currently placing, don't start placing
+    // (This avoids accidental place-start when you meant to select a circle.)
+    if (!placing) {
+      const hit = findCircleAtScreenPoint(p);
+      if (hit !== -1) return;
 
+      // First click: set center
+      placing = true;
+      placeCenter = screenToWorld(p);
+      placeR = 0;
+      draw();
+      return;
+    }
+
+    // Second click: finalize
     const w = screenToWorld(p);
     const r = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
-
     if (r > 1) circles.push({ x: placeCenter.x, y: placeCenter.y, r });
 
     placing = false;
@@ -328,24 +317,18 @@
     e.preventDefault();
 
     const p = getMouseScreen(e);
-
-    // World point under cursor BEFORE zoom
     const before = screenToWorld(p);
 
-    // Smooth zoom factor
     const zoomFactor = Math.exp(-e.deltaY * 0.001);
     cam.z = clamp(cam.z * zoomFactor, MIN_ZOOM, MAX_ZOOM);
 
-    // World point under cursor AFTER zoom
     const after = screenToWorld(p);
-
-    // Adjust camera so the cursor stays pinned to the same world point
     cam.x += before.x - after.x;
     cam.y += before.y - after.y;
 
     clampCameraToWorld();
 
-    // Update preview radius if placing
+    // keep preview consistent
     if (placing) {
       const w = screenToWorld(p);
       placeR = Math.hypot(w.x - placeCenter.x, w.y - placeCenter.y);
@@ -356,10 +339,10 @@
 
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      // cancel in-progress placement OR stop pan candidates
       placing = false;
       placeR = 0;
-      panCandidate = false;
+      draggingCircle = false;
+      dragIndex = -1;
       panning = false;
       draw();
     }
