@@ -5,8 +5,8 @@
   const VERSION = "v0.1.4 (2026-01-03)";
 
   // World size (world units)
-  const WORLD_W = 3000;
-  const WORLD_H = 2000;
+  const WORLD_W = 50000;
+  const WORLD_H = 5000;
 
   // Interaction tuning
   const HIT_PAD_PX = 6;
