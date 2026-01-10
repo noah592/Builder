@@ -69,7 +69,7 @@
         const r = radius;
 
         ctx.save();
-        ctx.fillStyle = "#ff0";
+        ctx.fillStyle = "#f00";
         ctx.fillRect(Math.floor(sx - r), Math.floor(sy - r), r * 2, r * 2);
         ctx.restore();
       }
