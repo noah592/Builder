@@ -5,11 +5,22 @@
     const SLOP_CELLS = typeof opts.slopCells === "number" ? opts.slopCells : 0;
     const POS_CORR = typeof opts.posCorr === "number" ? opts.posCorr : 1.0;
 
+    // If you want to hard-limit worst-case overlap scans, set e.g. 250000.
+    // Leave 0 to disable.
+    const MAX_SCAN_AREA = typeof opts.maxScanArea === "number" ? opts.maxScanArea : 0;
+
     // ---- DEBUG TRIPWIRES ----
     const DEBUG = opts.debug !== undefined ? !!opts.debug : true;
     let didOneTimeCheck = false;
     let hasSolidCalls = 0;
     let didWarnOverlapScan = false;
+
+    function snapBodyToCells(b) {
+      // Critical for stability: keep bodies on the integer grid so occupancy mapping
+      // (which uses floor(wx - body.x)) doesn't "shift" as bodies move slightly.
+      b.x = Math.round(b.x);
+      b.y = Math.round(b.y);
+    }
 
     function updateAABB(b) {
       if (!b.aabb) b.aabb = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
@@ -43,6 +54,7 @@
       const pen = bottom - floorY;
       if (pen > 0) {
         b.y -= pen;
+        snapBodyToCells(b);
         if (b.vy > 0) b.vy = 0;
         updateAABB(b);
       }
@@ -51,7 +63,6 @@
     // ---- Narrow phase overlap bounds in integer cells ----
     function overlappedSolidCellBounds(bodiesModule, A, B) {
       if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
-        // HARD FAIL so you can't miss it
         throw new Error(
           "[physics] bodies.hasSolidAtWorld(body, x, y) is missing. " +
             "You must expose it from bodies.js return object."
@@ -67,27 +78,33 @@
       const iy1 = Math.min(a.maxY, b.maxY);
       if (ix1 <= ix0 || iy1 <= iy0) return null;
 
-      // IMPORTANT: treat AABBs as half-open [min, max)
-      // Cells to test are those with integer coordinates inside the intersection.
+      // Treat AABBs as half-open [min, max)
       const x0 = Math.ceil(ix0);
       const y0 = Math.ceil(iy0);
       const x1 = Math.floor(ix1 - 1e-9);
       const y1 = Math.floor(iy1 - 1e-9);
-
       if (x1 < x0 || y1 < y0) return null;
+
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      if (MAX_SCAN_AREA > 0 && area > MAX_SCAN_AREA) {
+        if (DEBUG && !didWarnOverlapScan) {
+          console.warn("[physics] Overlap scan area exceeded cap; skipping narrow-phase:", {
+            x0, y0, x1, y1, area, cap: MAX_SCAN_AREA,
+          });
+          didWarnOverlapScan = true;
+        }
+        return null;
+      }
+
+      // If overlap region is huge, that's suspicious (would be slow).
+      if (DEBUG && !didWarnOverlapScan && area > 200000) {
+        console.warn("[physics] Huge overlap scan region:", { x0, y0, x1, y1, area });
+        didWarnOverlapScan = true;
+      }
 
       let minOX = Infinity, minOY = Infinity;
       let maxOX = -Infinity, maxOY = -Infinity;
       let any = false;
-
-      // If overlap region is huge, that's suspicious (would be slow).
-      if (DEBUG && !didWarnOverlapScan) {
-        const area = (x1 - x0 + 1) * (y1 - y0 + 1);
-        if (area > 200000) {
-          console.warn("[physics] Huge overlap scan region:", { x0, y0, x1, y1, area });
-          didWarnOverlapScan = true;
-        }
-      }
 
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
@@ -120,6 +137,7 @@
 
       let nx = 0, ny = 0, sepCells = 0;
 
+      // Choose smallest penetration axis in CELL units (stable)
       if (penX < penY) {
         sepCells = penX;
         const aCx = (A.aabb.minX + A.aabb.maxX) * 0.5;
@@ -150,6 +168,7 @@
       if (invA > 0) {
         A.x += -nx * moveA;
         A.y += -ny * moveA;
+        snapBodyToCells(A);
 
         // Position-only solver: kill velocity along axis
         if (nx !== 0) A.vx = 0;
@@ -157,9 +176,11 @@
 
         updateAABB(A);
       }
+
       if (invB > 0) {
         B.x += nx * moveB;
         B.y += ny * moveB;
+        snapBodyToCells(B);
 
         if (nx !== 0) B.vx = 0;
         if (ny !== 0) B.vy = 0;
@@ -174,13 +195,12 @@
       const arr = bodiesModule.getBodies ? bodiesModule.getBodies() : null;
       if (!arr) throw new Error("[physics] bodies.getBodies() missing.");
 
-      // One-time sanity checks (very important)
+      // One-time sanity checks
       if (DEBUG && !didOneTimeCheck) {
         didOneTimeCheck = true;
 
         console.log("[physics] DEBUG enabled");
 
-        // 1) Verify function exists
         if (typeof bodiesModule.hasSolidAtWorld !== "function") {
           throw new Error(
             "[physics] bodies.hasSolidAtWorld is not a function. " +
@@ -188,8 +208,6 @@
           );
         }
 
-        // 2) If there is at least one body, test a known solid cell:
-        // pick the first body, find its top-left cell in world coords, and query it.
         if (arr.length > 0) {
           const b = arr[0];
           updateAABB(b);
@@ -202,11 +220,9 @@
             testX,
             testY,
             returned: v,
-            note:
-              "If returned is 0 but that cell should be inside the body, your hasSolidAtWorld wiring is wrong.",
           });
         } else {
-          console.log("[physics] No bodies yet; create one and refresh to see overlap checks.");
+          console.log("[physics] No bodies yet; create one and refresh.");
         }
       }
 
@@ -224,6 +240,7 @@
         b.x += b.vx * dt;
         b.y += b.vy * dt;
 
+        snapBodyToCells(b);
         updateAABB(b);
       }
 
@@ -253,7 +270,6 @@
         for (let i = 0; i < arr.length; i++) collideWithGround(arr[i], floorY);
       }
 
-      // Periodically show that narrow-phase is being exercised
       if (DEBUG && (performance.now() | 0) % 1000 < 16) {
         console.log("[physics] hasSolidAtWorld calls (approx/s):", hasSolidCalls);
         hasSolidCalls = 0;
