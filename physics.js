@@ -1,6 +1,6 @@
 (() => {
   function createPhysics(opts = {}) {
-    const GRAVITY = typeof opts.gravity === "number" ? opts.gravity : 2000;
+    const GRAVITY = typeof opts.gravity === "number" ? opts.gravity : 500;
 
     // More iterations = more stable stacking
     const SOLVER_ITERS = typeof opts.solverIters === "number" ? opts.solverIters : 6;
