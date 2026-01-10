@@ -182,6 +182,7 @@
       // Step physics (gravity + integration only)
       physics.step(world, bodies, dt);
       centroid.updateAll();
+      contour.updateAll();
 
       // Keep camera valid
       clampCameraToWorld();
