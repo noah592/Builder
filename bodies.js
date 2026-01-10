@@ -524,6 +524,7 @@
       setBodyPos,
       getBodyPos,
       getBodyMass,
+      getBodies: () => bodies,
       draw,
     };
   }
