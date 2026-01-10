@@ -104,12 +104,15 @@
       return { w: rect.width / cam.z, h: rect.height / cam.z };
     }
 
-    function centerCamera() {
-      applyZoomLimits();
-      const view = getViewWorldSize();
-      cam.x = (WORLD_W - view.w) / 2;
-      cam.y = (WORLD_H - view.h) / 2;
-    }
+   function centerCamera() {
+  applyZoomLimits();
+  const view = getViewWorldSize();
+
+  const floorY = WORLD_H - WORLD_H / 5;
+
+  cam.x = (WORLD_W - view.w) / 2;
+  cam.y = floorY - view.h * 0.8;
+}
 
     function clampCameraToWorld() {
       const view = getViewWorldSize();
