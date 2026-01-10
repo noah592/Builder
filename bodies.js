@@ -2,10 +2,13 @@
   function createBodies() {
     const TILE_SIZE = 128;
 
-    // Body list (draw order = array order; last is topmost)
+    // Draw order = array order; last is topmost
     const bodies = [];
     let nextId = 1;
 
+    // ---------------------------------------------------------
+    // Tile helpers
+    // ---------------------------------------------------------
     function tileKey(tx, ty) {
       return `${tx},${ty}`;
     }
@@ -30,7 +33,7 @@
         ctx,
         img,
         dirty: true,
-        nonZeroCount: 0, // solid cell count within this tile
+        nonZeroCount: 0,
       };
     }
 
@@ -53,15 +56,9 @@
       for (let i = 0; i < occ.length; i++) {
         const p = i * 4;
         if (occ[i]) {
-          data[p + 0] = 255;
-          data[p + 1] = 255;
-          data[p + 2] = 255;
-          data[p + 3] = 255;
+          data[p] = data[p + 1] = data[p + 2] = data[p + 3] = 255;
         } else {
-          data[p + 0] = 0;
-          data[p + 1] = 0;
-          data[p + 2] = 0;
-          data[p + 3] = 0;
+          data[p] = data[p + 1] = data[p + 2] = data[p + 3] = 0;
         }
       }
 
@@ -69,33 +66,32 @@
       t.dirty = false;
     }
 
-    function createEmptyBodyAtBounds(bounds) {
-      const id = nextId++;
+    // ---------------------------------------------------------
+    // Body helpers
+    // ---------------------------------------------------------
+    function createEmptyBody(bounds, forcedId = null) {
       return {
-        id,
+        id: forcedId ?? nextId++,
         x: bounds.minX,
         y: bounds.minY,
         w: bounds.maxX - bounds.minX + 1,
         h: bounds.maxY - bounds.minY + 1,
         tiles: new Map(),
-        mass: 0, // number of SOLID CELLS
+        mass: 0,
       };
     }
 
     function getBodyById(id) {
-      for (let i = 0; i < bodies.length; i++) {
-        if (bodies[i].id === id) return bodies[i];
-      }
-      return null;
+      return bodies.find(b => b.id === id) || null;
     }
 
     function removeBodyById(id) {
-      const idx = bodies.findIndex((b) => b.id === id);
+      const idx = bodies.findIndex(b => b.id === id);
       if (idx !== -1) bodies.splice(idx, 1);
     }
 
     // ---------------------------------------------------------
-    // Cell query/set in a body (body-local coords)
+    // Local cell access
     // ---------------------------------------------------------
     function bodyGetLocal(body, lx, ly) {
       if (lx < 0 || ly < 0 || lx >= body.w || ly >= body.h) return 0;
@@ -146,51 +142,12 @@
     }
 
     function bodyHasSolidAtWorld(body, wx, wy) {
-      // World -> local
       const lx = Math.floor(wx - body.x);
       const ly = Math.floor(wy - body.y);
       return bodyGetLocal(body, lx, ly) === 1;
     }
 
-    // ---------------------------------------------------------
-    // Bounds helpers
-    // ---------------------------------------------------------
-    function stampBounds(stamp) {
-      return {
-        minX: stamp.worldX,
-        minY: stamp.worldY,
-        maxX: stamp.worldX + stamp.w - 1,
-        maxY: stamp.worldY + stamp.h - 1,
-      };
-    }
-
-    function bodyBounds(body) {
-      return {
-        minX: body.x,
-        minY: body.y,
-        maxX: body.x + body.w - 1,
-        maxY: body.y + body.h - 1,
-      };
-    }
-
-    function unionBounds(a, b) {
-      return {
-        minX: Math.min(a.minX, b.minX),
-        minY: Math.min(a.minY, b.minY),
-        maxX: Math.max(a.maxX, b.maxX),
-        maxY: Math.max(a.maxY, b.maxY),
-      };
-    }
-
-    function boundsIntersect(a, b) {
-      return !(a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY);
-    }
-
-    // ---------------------------------------------------------
-    // Iterate solid cells of a body in WORLD coords
-    // ---------------------------------------------------------
     function forEachSolidCellWorld(body, fn) {
-      // Iterate tiles, then cells within tile
       for (const t of body.tiles.values()) {
         const baseLX = t.tx * TILE_SIZE;
         const baseLY = t.ty * TILE_SIZE;
@@ -201,282 +158,211 @@
           const inX = i % TILE_SIZE;
           const inY = (i / TILE_SIZE) | 0;
 
-          const lx = baseLX + inX;
-          const ly = baseLY + inY;
-
-          // Local -> world
-          const wx = body.x + lx;
-          const wy = body.y + ly;
-
-          fn(wx, wy);
+          fn(body.x + baseLX + inX, body.y + baseLY + inY);
         }
       }
     }
 
     // ---------------------------------------------------------
-    // Build/replace survivor with union of (survivor + other bodies + stamp)
+    // Bounds helpers
     // ---------------------------------------------------------
-    function rebuildSurvivorAsUnion(survivor, bodiesToAbsorb, stamp) {
-      // Compute union bounds
-      let ub = bodyBounds(survivor);
-      for (const b of bodiesToAbsorb) ub = unionBounds(ub, bodyBounds(b));
-      ub = unionBounds(ub, stampBounds(stamp));
+    function bodyBounds(b) {
+      return {
+        minX: b.x,
+        minY: b.y,
+        maxX: b.x + b.w - 1,
+        maxY: b.y + b.h - 1,
+      };
+    }
 
-      const newBody = createEmptyBodyAtBounds(ub);
+    function stampBounds(s) {
+      return {
+        minX: s.worldX,
+        minY: s.worldY,
+        maxX: s.worldX + s.w - 1,
+        maxY: s.worldY + s.h - 1,
+      };
+    }
 
-      // Keep survivor id (identity continuity)
-      newBody.id = survivor.id;
-
-      // Paint survivor cells
-      forEachSolidCellWorld(survivor, (wx, wy) => {
-        const lx = wx - newBody.x;
-        const ly = wy - newBody.y;
-        bodySetLocal(newBody, lx, ly, 1);
-      });
-
-      // Paint absorbed bodies
-      for (const b of bodiesToAbsorb) {
-        forEachSolidCellWorld(b, (wx, wy) => {
-          const lx = wx - newBody.x;
-          const ly = wy - newBody.y;
-          bodySetLocal(newBody, lx, ly, 1);
-        });
-      }
-
-      // Paint stamp solids
-      const sData = stamp.data;
-      for (let sy = 0; sy < stamp.h; sy++) {
-        const wy = stamp.worldY + sy;
-        for (let sx = 0; sx < stamp.w; sx++) {
-          if (!sData[sy * stamp.w + sx]) continue;
-          const wx = stamp.worldX + sx;
-
-          const lx = wx - newBody.x;
-          const ly = wy - newBody.y;
-          bodySetLocal(newBody, lx, ly, 1);
-        }
-      }
-
-      // Replace survivor fields (keep same object reference)
-      survivor.x = newBody.x;
-      survivor.y = newBody.y;
-      survivor.w = newBody.w;
-      survivor.h = newBody.h;
-      survivor.tiles = newBody.tiles;
-      survivor.mass = newBody.mass;
+    function boundsIntersect(a, b) {
+      return !(a.maxX < b.minX || b.maxX < a.minX ||
+               a.maxY < b.minY || b.maxY < a.minY);
     }
 
     // ---------------------------------------------------------
-    // Merge detection on create (overlap-based)
+    // Merge / split core
     // ---------------------------------------------------------
-    function findTouchedBodiesByStamp(stamp) {
-      const touched = [];
+    function buildComponents(cells) {
+      const set = new Set(cells.map(c => `${c.x},${c.y}`));
+      const visited = new Set();
+      const comps = [];
 
-      const sb = stampBounds(stamp);
+      const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
 
-      // Candidate bodies by AABB intersection
-      const candidates = bodies.filter((b) => boundsIntersect(bodyBounds(b), sb));
-      if (candidates.length === 0) return touched;
+      for (const key of set) {
+        if (visited.has(key)) continue;
 
-      const sData = stamp.data;
+        const [sx, sy] = key.split(',').map(Number);
+        const stack = [{ x: sx, y: sy }];
+        const comp = [];
 
-      // For each candidate, test actual overlap by scanning stamp solids
-      // and querying candidate occupancy at those world coords.
-      // Early-exit once a body is confirmed touched.
-      for (const b of candidates) {
-        let hit = false;
+        visited.add(key);
 
-        // Iterate stamp cells; if many, this is still fine for now (incremental step)
-        for (let sy = 0; sy < stamp.h && !hit; sy++) {
-          const wy = stamp.worldY + sy;
-          for (let sx = 0; sx < stamp.w; sx++) {
-            if (!sData[sy * stamp.w + sx]) continue;
+        while (stack.length) {
+          const { x, y } = stack.pop();
+          comp.push({ x, y });
 
-            const wx = stamp.worldX + sx;
-            if (bodyHasSolidAtWorld(b, wx, wy)) {
-              hit = true;
-              break;
+          for (const [dx, dy] of dirs) {
+            const nx = x + dx;
+            const ny = y + dy;
+            const nk = `${nx},${ny}`;
+            if (set.has(nk) && !visited.has(nk)) {
+              visited.add(nk);
+              stack.push({ x: nx, y: ny });
             }
           }
         }
 
-        if (hit) touched.push(b);
+        comps.push(comp);
       }
 
-      return touched;
+      return comps;
+    }
+
+    function buildBodyFromComponent(comp, forcedId = null) {
+      let minX = Infinity, minY = Infinity;
+      let maxX = -Infinity, maxY = -Infinity;
+
+      for (const { x, y } of comp) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+
+      const body = createEmptyBody(
+        { minX, minY, maxX, maxY },
+        forcedId
+      );
+
+      for (const { x, y } of comp) {
+        bodySetLocal(body, x - body.x, y - body.y, 1);
+      }
+
+      return body;
     }
 
     // ---------------------------------------------------------
-    // Public: create body from a generic stamp
-    // stamp: { worldX, worldY, w, h, data: Uint8Array(w*h) 0/1 }
-    // Returns: resulting body id (new or survivor id)
+    // Public: create body from stamp (merge + split)
     // ---------------------------------------------------------
     function createBodyFromStamp(stamp) {
-      // Fast path: if no solids, ignore
-      let any = false;
-      for (let i = 0; i < stamp.data.length; i++) {
-        if (stamp.data[i]) {
-          any = true;
-          break;
+      if (!stamp.data.some(v => v)) return -1;
+
+      const sb = stampBounds(stamp);
+      const touched = bodies.filter(b =>
+        boundsIntersect(bodyBounds(b), sb)
+      );
+
+      const cells = [];
+
+      for (const b of touched) {
+        forEachSolidCellWorld(b, (x, y) => cells.push({ x, y }));
+      }
+
+      for (let sy = 0; sy < stamp.h; sy++) {
+        for (let sx = 0; sx < stamp.w; sx++) {
+          if (!stamp.data[sy * stamp.w + sx]) continue;
+          cells.push({ x: stamp.worldX + sx, y: stamp.worldY + sy });
         }
       }
-      if (!any) return -1;
 
-      const touched = findTouchedBodiesByStamp(stamp);
+      if (cells.length === 0) return -1;
 
-      if (touched.length === 0) {
-        // Create new body exactly from stamp bounds
-        const b = {
-          id: nextId++,
-          x: stamp.worldX,
-          y: stamp.worldY,
-          w: stamp.w,
-          h: stamp.h,
-          tiles: new Map(),
-          mass: 0,
-        };
+      const comps = buildComponents(cells);
+      comps.sort((a, b) => b.length - a.length);
 
-        // Paint stamp into body-local coords
-        const sData = stamp.data;
-        for (let ly = 0; ly < stamp.h; ly++) {
-          for (let lx = 0; lx < stamp.w; lx++) {
-            if (!sData[ly * stamp.w + lx]) continue;
-            bodySetLocal(b, lx, ly, 1);
-          }
-        }
-
-        bodies.push(b);
-        return b.id;
+      let survivorId = null;
+      if (touched.length) {
+        touched.sort((a, b) => b.mass - a.mass || a.id - b.id);
+        survivorId = touched[0].id;
       }
 
-      // Choose survivor = largest mass (ties -> lowest id)
-      touched.sort((a, b) => (b.mass - a.mass) || (a.id - b.id));
-      const survivor = touched[0];
-      const toAbsorb = touched.slice(1);
+      for (const b of touched) removeBodyById(b.id);
 
-      // Rebuild survivor as union(survivor + absorb + stamp)
-      rebuildSurvivorAsUnion(survivor, toAbsorb, stamp);
+      const newBodies = [];
+      newBodies.push(buildBodyFromComponent(comps[0], survivorId));
 
-      // Remove absorbed bodies from list
-      for (const b of toAbsorb) {
-        removeBodyById(b.id);
+      for (let i = 1; i < comps.length; i++) {
+        newBodies.push(buildBodyFromComponent(comps[i]));
       }
 
-      // Keep survivor on top visually if the new stamp was just created:
-      // move survivor to end of draw order so it feels like “the thing you just made/edited”
-      const sIdx = bodies.findIndex((bb) => bb.id === survivor.id);
-      if (sIdx !== -1 && sIdx !== bodies.length - 1) {
-        bodies.splice(sIdx, 1);
-        bodies.push(survivor);
-      }
+      for (const b of newBodies) bodies.push(b);
 
-      return survivor.id;
+      return newBodies[0].id;
     }
 
     // ---------------------------------------------------------
-    // Hit test for selection (world point)
+    // Selection / movement / query
     // ---------------------------------------------------------
     function hitTest(worldPt) {
       for (let i = bodies.length - 1; i >= 0; i--) {
         const b = bodies[i];
-
-        // Quick AABB
         if (
           worldPt.x < b.x || worldPt.y < b.y ||
-          worldPt.x >= b.x + b.w || worldPt.y >= b.y + b.h
+          worldPt.x >= b.x + b.w ||
+          worldPt.y >= b.y + b.h
         ) continue;
 
-        // Exact occupancy test
-        const lx = Math.floor(worldPt.x - b.x);
-        const ly = Math.floor(worldPt.y - b.y);
-        if (bodyGetLocal(b, lx, ly)) return b.id;
+        if (bodyGetLocal(b,
+          Math.floor(worldPt.x - b.x),
+          Math.floor(worldPt.y - b.y)
+        )) return b.id;
       }
       return -1;
     }
 
     function setBodyPos(id, x, y) {
       const b = getBodyById(id);
-      if (!b) return;
-      b.x = x;
-      b.y = y;
+      if (b) { b.x = x; b.y = y; }
     }
 
     function getBodyPos(id) {
       const b = getBodyById(id);
-      if (!b) return null;
-      return { x: b.x, y: b.y };
+      return b ? { x: b.x, y: b.y } : null;
     }
 
     function getBodyMass(id) {
       const b = getBodyById(id);
-      if (!b) return 0;
-      return b.mass;
+      return b ? b.mass : 0;
     }
 
     // ---------------------------------------------------------
-    // Draw bodies
+    // Drawing
     // ---------------------------------------------------------
     function draw(ctx, cam) {
-      // Draw each body by drawing its tiles at body transform (translation only)
       const rect = ctx.canvas.getBoundingClientRect();
       const viewW = rect.width / cam.z;
       const viewH = rect.height / cam.z;
 
-      const viewMinWX = cam.x;
-      const viewMinWY = cam.y;
-      const viewMaxWX = cam.x + viewW;
-      const viewMaxWY = cam.y + viewH;
+      for (const b of bodies) {
+        for (const t of b.tiles.values()) {
+          updateTileImageIfDirty(t);
 
-      for (let i = 0; i < bodies.length; i++) {
-        const b = bodies[i];
+          const wx = b.x + t.tx * TILE_SIZE;
+          const wy = b.y + t.ty * TILE_SIZE;
 
-        // Intersect view with body AABB (world)
-        const bx0 = b.x;
-        const by0 = b.y;
-        const bx1 = b.x + b.w;
-        const by1 = b.y + b.h;
+          const sx = (wx - cam.x) * cam.z;
+          const sy = (wy - cam.y) * cam.z;
+          const sw = TILE_SIZE * cam.z;
+          const sh = TILE_SIZE * cam.z;
 
-        const ix0 = Math.max(viewMinWX, bx0);
-        const iy0 = Math.max(viewMinWY, by0);
-        const ix1 = Math.min(viewMaxWX, bx1);
-        const iy1 = Math.min(viewMaxWY, by1);
-
-        if (ix1 <= ix0 || iy1 <= iy0) continue;
-
-        // Convert intersection to body-local coords
-        const l0x = Math.floor(ix0 - b.x);
-        const l0y = Math.floor(iy0 - b.y);
-        const l1x = Math.ceil(ix1 - b.x);
-        const l1y = Math.ceil(iy1 - b.y);
-
-        const minTX = Math.floor(l0x / TILE_SIZE);
-        const minTY = Math.floor(l0y / TILE_SIZE);
-        const maxTX = Math.floor((l1x - 1) / TILE_SIZE);
-        const maxTY = Math.floor((l1y - 1) / TILE_SIZE);
-
-        for (let ty = minTY; ty <= maxTY; ty++) {
-          for (let tx = minTX; tx <= maxTX; tx++) {
-            const t = getTile(b, tx, ty, false);
-            if (!t) continue;
-
-            updateTileImageIfDirty(t);
-
-            const worldX = b.x + tx * TILE_SIZE;
-            const worldY = b.y + ty * TILE_SIZE;
-
-            const sx = (worldX - cam.x) * cam.z;
-            const sy = (worldY - cam.y) * cam.z;
-            const sw = TILE_SIZE * cam.z;
-            const sh = TILE_SIZE * cam.z;
-
-            const sxI = Math.floor(sx);
-            const syI = Math.floor(sy);
-            const swI = Math.round(sw);
-            const shI = Math.round(sh);
-
-            // 1-pixel overlap (seam killer)
-            ctx.drawImage(t.canvas, sxI, syI, swI + 1, shI + 1);
-          }
+          ctx.drawImage(
+            t.canvas,
+            Math.floor(sx),
+            Math.floor(sy),
+            Math.round(sw) + 1,
+            Math.round(sh) + 1
+          );
         }
       }
     }
