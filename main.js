@@ -55,7 +55,7 @@
     // Middle mouse pan
     let panning = false;
     let panStartMouse = { x: 0, y: 0 };
-    let panStartCam = { x: 0, y: 0 };
+    let panStartCam = { x: 0, y: -11000 };
 
     // Left mouse drag body
     let draggingBody = false;
