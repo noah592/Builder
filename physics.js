@@ -28,15 +28,10 @@
       b.y = Math.round(b.y);
     }
 
-    function ensureVel(b) {
-      if (typeof b.vx !== "number") b.vx = 0;
-      if (typeof b.vy !== "number") b.vy = 0;
-    }
-
     function collideWithGround(b, floorY) {
       if (!b || b.invMass === 0) return;
 
-      ensureVel(b);
+      
 
       const bottom = b.y + b.h;
       const pen = bottom - floorY;
@@ -163,8 +158,7 @@
       const invB = B.invMass || 0;
       if (invA === 0 && invB === 0) return;
 
-      ensureVel(A);
-      ensureVel(B);
+  
 
       if (!anyOverlap(bodiesModule, A, B)) return;
 
@@ -239,8 +233,6 @@
       for (let i = 0; i < arr.length; i++) {
         const b = arr[i];
         if (!b || b.invMass === 0) continue;
-
-        ensureVel(b);
 
         b.vy += GRAVITY * dt;
         b.x += b.vx * dt;
