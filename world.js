@@ -6,7 +6,7 @@
     const TILE_SIZE = 128;
 
     // Ground is the midline: below is solid by default
-    const groundY = Math.floor(height/5);
+    const groundY = Math.floor(height-height/5);
 
     // Override encoding per cell:
     // 0 = UNSET (use default)
