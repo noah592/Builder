@@ -8,6 +8,9 @@
     // Limit how far we’ll try to separate in one solve attempt (cells)
     const MAX_SEP_TRY = typeof opts.maxSepTry === "number" ? opts.maxSepTry : 32;
 
+    // Restitution (bounciness). Start at 0 for stability.
+    const RESTITUTION = typeof opts.restitution === "number" ? opts.restitution : 0.0;
+
     // Debug (optional)
     const DEBUG = opts.debug !== undefined ? !!opts.debug : false;
 
@@ -25,30 +28,35 @@
       b.y = Math.round(b.y);
     }
 
+    function ensureVel(b) {
+      if (typeof b.vx !== "number") b.vx = 0;
+      if (typeof b.vy !== "number") b.vy = 0;
+    }
+
     function collideWithGround(b, floorY) {
       if (!b || b.invMass === 0) return;
+
+      ensureVel(b);
 
       const bottom = b.y + b.h;
       const pen = bottom - floorY;
       if (pen > 0) {
         b.y -= pen;
         snapBodyToCells(b);
+
+        // Cancel closing velocity into ground normal (0, -1)
         if (b.vy > 0) b.vy = 0;
       }
     }
 
     function anyOverlap(bodiesModule, A, B) {
-      // Brute overlap: iterate smaller-mass body’s solid cells via hasSolidAtWorld sampling.
-      // We don't have an iterator here, so we scan in the smaller body's bounding rect.
-      // This is expensive but AABB-free.
-
+      // Brute overlap: iterate smaller bounding rect; check only its solid cells
       if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
         throw new Error(
           "[physics] bodies.hasSolidAtWorld(body, x, y) is missing. Expose it from bodies.js."
         );
       }
 
-      // Choose smaller area to scan to reduce cost
       const areaA = (A.w | 0) * (A.h | 0);
       const areaB = (B.w | 0) * (B.h | 0);
 
@@ -57,7 +65,6 @@
         S = B; T = A;
       }
 
-      // Scan S’s entire bounding rect; check only its solid cells
       const sx0 = Math.floor(S.x);
       const sy0 = Math.floor(S.y);
       const sx1 = sx0 + (S.w | 0);
@@ -72,57 +79,80 @@
       return false;
     }
 
-    function trySeparateAxis(bodiesModule, A, B, dx, dy, maxTry) {
-      // Move A and/or B along (dx,dy) by k cells until overlap clears, return k if success else 0.
+    function applyNormalImpulse(A, B, nx, ny) {
+      // Only normal impulse, no friction, no rotation.
+      ensureVel(A);
+      ensureVel(B);
 
       const invA = A.invMass || 0;
       const invB = B.invMass || 0;
+      const invSum = invA + invB;
+      if (invSum <= 0) return;
 
-      // If both static, can't separate
+      // Relative velocity along normal
+      const rvx = B.vx - A.vx;
+      const rvy = B.vy - A.vy;
+      const vn = rvx * nx + rvy * ny;
+
+      // Only if closing (vn < 0)
+      if (vn >= 0) return;
+
+      const e = RESTITUTION;
+      const j = -(1 + e) * vn / invSum;
+
+      // Apply impulse
+      if (invA > 0) {
+        A.vx -= j * invA * nx;
+        A.vy -= j * invA * ny;
+      }
+      if (invB > 0) {
+        B.vx += j * invB * nx;
+        B.vy += j * invB * ny;
+      }
+    }
+
+    function trySeparateAxis(bodiesModule, A, B, dx, dy, maxTry) {
+      // Move A and/or B along (dx,dy) by k cells until overlap clears.
+      // Returns the k if successful, else 0. Leaves bodies at the successful position.
+      const invA = A.invMass || 0;
+      const invB = B.invMass || 0;
+
       if (invA === 0 && invB === 0) return 0;
 
-      // Decide who moves: if one is static, move the other.
-      // If both dynamic, split moves evenly in opposite directions.
-      function applyShift(k) {
-        if (invA > 0 && invB > 0) {
-          // Split: move both half (rounded) so net separation is k
-          const aK = Math.floor(k / 2);
-          const bK = k - aK;
-          A.x += -dx * aK;
-          A.y += -dy * aK;
-          B.x += dx * bK;
-          B.y += dy * bK;
-          snapBodyToCells(A);
-          snapBodyToCells(B);
-        } else if (invA > 0) {
-          A.x += -dx * k;
-          A.y += -dy * k;
-          snapBodyToCells(A);
-        } else if (invB > 0) {
-          B.x += dx * k;
-          B.y += dy * k;
-          snapBodyToCells(B);
-        }
-      }
-
-      // Save original positions to restore after failed tries
       const ax0 = A.x, ay0 = A.y;
       const bx0 = B.x, by0 = B.y;
 
-      // Try k = 1..maxTry
-      for (let k = 1; k <= maxTry; k++) {
-        // Reset and apply trial shift
-        A.x = ax0; A.y = ay0;
-        B.x = bx0; B.y = by0;
-        applyShift(k);
-
-        if (!anyOverlap(bodiesModule, A, B)) {
-          // Keep these moved positions
-          return k;
+      function applyShift(k) {
+        if (invA > 0 && invB > 0) {
+          const aK = Math.floor(k / 2);
+          const bK = k - aK;
+          A.x = ax0 + (-dx * aK);
+          A.y = ay0 + (-dy * aK);
+          B.x = bx0 + ( dx * bK);
+          B.y = by0 + ( dy * bK);
+          snapBodyToCells(A);
+          snapBodyToCells(B);
+        } else if (invA > 0) {
+          A.x = ax0 + (-dx * k);
+          A.y = ay0 + (-dy * k);
+          snapBodyToCells(A);
+          B.x = bx0; B.y = by0;
+        } else {
+          B.x = bx0 + ( dx * k);
+          B.y = by0 + ( dy * k);
+          snapBodyToCells(B);
+          A.x = ax0; A.y = ay0;
         }
       }
 
-      // Restore if no success
+      for (let k = 1; k <= maxTry; k++) {
+        applyShift(k);
+        if (!anyOverlap(bodiesModule, A, B)) {
+          return k; // success, positions already applied
+        }
+      }
+
+      // restore if no success
       A.x = ax0; A.y = ay0;
       B.x = bx0; B.y = by0;
       return 0;
@@ -130,59 +160,71 @@
 
     function resolvePairNoAABB(bodiesModule, A, B) {
       if (!A || !B) return;
-      if ((A.invMass || 0) === 0 && (B.invMass || 0) === 0) return;
+      const invA = A.invMass || 0;
+      const invB = B.invMass || 0;
+      if (invA === 0 && invB === 0) return;
 
-      // If not overlapping, nothing to do
+      ensureVel(A);
+      ensureVel(B);
+
       if (!anyOverlap(bodiesModule, A, B)) return;
 
-      // Try separating in 4 cardinal directions; choose the smallest k that clears overlap.
-      // This avoids “reversed normal” issues because we explicitly test clearance.
+      // Try 4 directions; choose smallest separation that clears overlap.
+      // We record the winning normal (dx,dy) for impulse.
       const trials = [
-        { dx: 1, dy: 0 },  // separate along +x / -x
-        { dx: -1, dy: 0 },
-        { dx: 0, dy: 1 },  // separate along +y / -y
-        { dx: 0, dy: -1 },
+        { dx:  1, dy:  0 },
+        { dx: -1, dy:  0 },
+        { dx:  0, dy:  1 },
+        { dx:  0, dy: -1 },
       ];
 
-      let best = { k: 0, dx: 0, dy: 0 };
-
-      // Save original positions to restore between trials
       const ax0 = A.x, ay0 = A.y;
       const bx0 = B.x, by0 = B.y;
 
+      let bestK = 0;
+      let bestDx = 0;
+      let bestDy = 0;
+
       for (const t of trials) {
-        // Restore
+        // restore baseline
         A.x = ax0; A.y = ay0;
         B.x = bx0; B.y = by0;
 
         const k = trySeparateAxis(bodiesModule, A, B, t.dx, t.dy, MAX_SEP_TRY);
-        if (k > 0 && (best.k === 0 || k < best.k)) {
-          best = { k, dx: t.dx, dy: t.dy };
+        if (k > 0 && (bestK === 0 || k < bestK)) {
+          bestK = k;
+          bestDx = t.dx;
+          bestDy = t.dy;
         }
       }
 
-      // Restore originals before applying best for real
+      // Apply best separation for real
       A.x = ax0; A.y = ay0;
       B.x = bx0; B.y = by0;
 
-      if (best.k > 0) {
-        // Apply best shift permanently
-        trySeparateAxis(bodiesModule, A, B, best.dx, best.dy, best.k);
+      if (bestK > 0) {
+        // Separate with exact bestK
+        // (We call trySeparateAxis with maxTry=bestK so it lands on that solution.)
+        trySeparateAxis(bodiesModule, A, B, bestDx, bestDy, bestK);
 
-        // Kill velocity on the axis we separated (position-only stability)
-        if (best.dx !== 0) {
-          if (A.invMass) A.vx = 0;
-          if (B.invMass) B.vx = 0;
-        }
-        if (best.dy !== 0) {
-          if (A.invMass) A.vy = 0;
-          if (B.invMass) B.vy = 0;
-        }
+        // Convert separation direction into a collision normal.
+        // The convention here: normal points from A toward B along the chosen axis.
+        // With our separation shifts (A moves -dir, B moves +dir), this matches bestDx/bestDy.
+        const nx = bestDx;
+        const ny = bestDy;
+
+        // Apply a normal impulse to cancel closing velocity along that normal.
+        applyNormalImpulse(A, B, nx, ny);
+
+        // Optional: if after impulse they're still trying to move into each other next frame,
+        // keeping these helps stability in a grid world.
+        if (nx !== 0) { if (invA) A.vx = 0; if (invB) B.vx = 0; }
+        if (ny !== 0) { if (invA) A.vy = 0; if (invB) B.vy = 0; }
       } else {
-        // Couldn't separate within limit. As a safety, nudge up a bit for dynamic bodies.
+        // Could not separate within limit; safety nudge upward
         if (DEBUG) console.warn("[physics] Could not separate pair within MAX_SEP_TRY", A.id, B.id);
-        if (A.invMass) { A.y -= 1; snapBodyToCells(A); A.vy = 0; }
-        if (B.invMass) { B.y -= 1; snapBodyToCells(B); B.vy = 0; }
+        if (invA) { A.y -= 1; snapBodyToCells(A); A.vy = 0; }
+        if (invB) { B.y -= 1; snapBodyToCells(B); B.vy = 0; }
       }
     }
 
@@ -194,13 +236,12 @@
 
       const floorY = getFloorY(world);
 
-      // 1) Integrate (gravity only)
+      // 1) Integrate (gravity)
       for (let i = 0; i < arr.length; i++) {
         const b = arr[i];
         if (!b || b.invMass === 0) continue;
 
-        if (typeof b.vx !== "number") b.vx = 0;
-        if (typeof b.vy !== "number") b.vy = 0;
+        ensureVel(b);
 
         b.vy += GRAVITY * dt;
         b.x += b.vx * dt;
@@ -214,7 +255,7 @@
         collideWithGround(arr[i], floorY);
       }
 
-      // 3) Solve body-body collisions (no AABB)
+      // 3) Body-body solve (no AABB)
       for (let iter = 0; iter < SOLVER_ITERS; iter++) {
         for (let i = 0; i < arr.length; i++) {
           const A = arr[i];
@@ -228,7 +269,7 @@
           }
         }
 
-        // Re-apply ground after resolves (prevents sinking from pushes)
+        // Keep ground valid after pushes
         for (let i = 0; i < arr.length; i++) {
           collideWithGround(arr[i], floorY);
         }
