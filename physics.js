@@ -1,43 +1,15 @@
 (() => {
   function createPhysics(opts = {}) {
     const GRAVITY = typeof opts.gravity === "number" ? opts.gravity : 2000;
+
+    // More iterations = more stable stacking
     const SOLVER_ITERS = typeof opts.solverIters === "number" ? opts.solverIters : 6;
-    const SLOP_CELLS = typeof opts.slopCells === "number" ? opts.slopCells : 0;
-    const POS_CORR = typeof opts.posCorr === "number" ? opts.posCorr : 1.0;
 
-    // If you want to hard-limit worst-case overlap scans, set e.g. 250000.
-    // Leave 0 to disable.
-    const MAX_SCAN_AREA = typeof opts.maxScanArea === "number" ? opts.maxScanArea : 0;
+    // Limit how far we’ll try to separate in one solve attempt (cells)
+    const MAX_SEP_TRY = typeof opts.maxSepTry === "number" ? opts.maxSepTry : 32;
 
-    // ---- DEBUG TRIPWIRES ----
-    const DEBUG = opts.debug !== undefined ? !!opts.debug : true;
-    let didOneTimeCheck = false;
-    let hasSolidCalls = 0;
-    let didWarnOverlapScan = false;
-
-    function snapBodyToCells(b) {
-      // Critical for stability: keep bodies on the integer grid so occupancy mapping
-      // (which uses floor(wx - body.x)) doesn't "shift" as bodies move slightly.
-      b.x = Math.round(b.x);
-      b.y = Math.round(b.y);
-    }
-
-    function updateAABB(b) {
-      if (!b.aabb) b.aabb = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-      b.aabb.minX = b.x;
-      b.aabb.minY = b.y;
-      b.aabb.maxX = b.x + b.w;
-      b.aabb.maxY = b.y + b.h;
-    }
-
-    function aabbOverlap(a, b) {
-      return !(
-        a.maxX <= b.minX ||
-        a.minX >= b.maxX ||
-        a.maxY <= b.minY ||
-        a.minY >= b.maxY
-      );
-    }
+    // Debug (optional)
+    const DEBUG = opts.debug !== undefined ? !!opts.debug : false;
 
     function getFloorY(world) {
       if (world && typeof world.getFloorY === "function") return world.getFloorY();
@@ -45,6 +17,12 @@
       if (world && typeof world.floorY === "number") return world.floorY;
       if (world && typeof world.height === "number") return world.height - world.height / 5;
       return 0;
+    }
+
+    function snapBodyToCells(b) {
+      // Because occupancy sampling is integer-cell based
+      b.x = Math.round(b.x);
+      b.y = Math.round(b.y);
     }
 
     function collideWithGround(b, floorY) {
@@ -56,136 +34,155 @@
         b.y -= pen;
         snapBodyToCells(b);
         if (b.vy > 0) b.vy = 0;
-        updateAABB(b);
       }
     }
 
-    // ---- Narrow phase overlap bounds in integer cells ----
-    function overlappedSolidCellBounds(bodiesModule, A, B) {
+    function anyOverlap(bodiesModule, A, B) {
+      // Brute overlap: iterate smaller-mass body’s solid cells via hasSolidAtWorld sampling.
+      // We don't have an iterator here, so we scan in the smaller body's bounding rect.
+      // This is expensive but AABB-free.
+
       if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
         throw new Error(
-          "[physics] bodies.hasSolidAtWorld(body, x, y) is missing. " +
-            "You must expose it from bodies.js return object."
+          "[physics] bodies.hasSolidAtWorld(body, x, y) is missing. Expose it from bodies.js."
         );
       }
 
-      const a = A.aabb;
-      const b = B.aabb;
+      // Choose smaller area to scan to reduce cost
+      const areaA = (A.w | 0) * (A.h | 0);
+      const areaB = (B.w | 0) * (B.h | 0);
 
-      const ix0 = Math.max(a.minX, b.minX);
-      const iy0 = Math.max(a.minY, b.minY);
-      const ix1 = Math.min(a.maxX, b.maxX);
-      const iy1 = Math.min(a.maxY, b.maxY);
-      if (ix1 <= ix0 || iy1 <= iy0) return null;
-
-      // Treat AABBs as half-open [min, max)
-      const x0 = Math.ceil(ix0);
-      const y0 = Math.ceil(iy0);
-      const x1 = Math.floor(ix1 - 1e-9);
-      const y1 = Math.floor(iy1 - 1e-9);
-      if (x1 < x0 || y1 < y0) return null;
-
-      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
-      if (MAX_SCAN_AREA > 0 && area > MAX_SCAN_AREA) {
-        if (DEBUG && !didWarnOverlapScan) {
-          console.warn("[physics] Overlap scan area exceeded cap; skipping narrow-phase:", {
-            x0, y0, x1, y1, area, cap: MAX_SCAN_AREA,
-          });
-          didWarnOverlapScan = true;
-        }
-        return null;
+      let S = A, T = B;
+      if (areaB < areaA) {
+        S = B; T = A;
       }
 
-      // If overlap region is huge, that's suspicious (would be slow).
-      if (DEBUG && !didWarnOverlapScan && area > 200000) {
-        console.warn("[physics] Huge overlap scan region:", { x0, y0, x1, y1, area });
-        didWarnOverlapScan = true;
-      }
+      // Scan S’s entire bounding rect; check only its solid cells
+      const sx0 = Math.floor(S.x);
+      const sy0 = Math.floor(S.y);
+      const sx1 = sx0 + (S.w | 0);
+      const sy1 = sy0 + (S.h | 0);
 
-      let minOX = Infinity, minOY = Infinity;
-      let maxOX = -Infinity, maxOY = -Infinity;
-      let any = false;
-
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          hasSolidCalls += 2;
-
-          if (!bodiesModule.hasSolidAtWorld(A, x, y)) continue;
-          if (!bodiesModule.hasSolidAtWorld(B, x, y)) continue;
-
-          any = true;
-          if (x < minOX) minOX = x;
-          if (y < minOY) minOY = y;
-          if (x > maxOX) maxOX = x;
-          if (y > maxOY) maxOY = y;
+      for (let y = sy0; y < sy1; y++) {
+        for (let x = sx0; x < sx1; x++) {
+          if (!bodiesModule.hasSolidAtWorld(S, x, y)) continue;
+          if (bodiesModule.hasSolidAtWorld(T, x, y)) return true;
         }
       }
-
-      if (!any) return null;
-      return { minX: minOX, minY: minOY, maxX: maxOX, maxY: maxOY };
+      return false;
     }
 
-    function resolveTileOverlap(bodiesModule, A, B) {
-      if (!A || !B) return;
-      if (A.invMass === 0 && B.invMass === 0) return;
-
-      const o = overlappedSolidCellBounds(bodiesModule, A, B);
-      if (!o) return;
-
-      const penX = o.maxX - o.minX + 1;
-      const penY = o.maxY - o.minY + 1;
-
-      let nx = 0, ny = 0, sepCells = 0;
-
-      // Choose smallest penetration axis in CELL units (stable)
-      if (penX < penY) {
-        sepCells = penX;
-        const aCx = (A.aabb.minX + A.aabb.maxX) * 0.5;
-        const bCx = (B.aabb.minX + B.aabb.maxX) * 0.5;
-        nx = aCx < bCx ? -1 : 1;
-        ny = 0;
-      } else {
-        sepCells = penY;
-        const aCy = (A.aabb.minY + A.aabb.maxY) * 0.5;
-        const bCy = (B.aabb.minY + B.aabb.maxY) * 0.5;
-        nx = 0;
-        ny = aCy < bCy ? -1 : 1;
-      }
-
-      sepCells = Math.max(0, sepCells - SLOP_CELLS);
-      if (sepCells <= 0) return;
-
-      const sep = sepCells * POS_CORR;
+    function trySeparateAxis(bodiesModule, A, B, dx, dy, maxTry) {
+      // Move A and/or B along (dx,dy) by k cells until overlap clears, return k if success else 0.
 
       const invA = A.invMass || 0;
       const invB = B.invMass || 0;
-      const invSum = invA + invB;
-      if (invSum <= 0) return;
 
-      const moveA = sep * (invA / invSum);
-      const moveB = sep * (invB / invSum);
+      // If both static, can't separate
+      if (invA === 0 && invB === 0) return 0;
 
-      if (invA > 0) {
-        A.x += -nx * moveA;
-        A.y += -ny * moveA;
-        snapBodyToCells(A);
-
-        // Position-only solver: kill velocity along axis
-        if (nx !== 0) A.vx = 0;
-        if (ny !== 0) A.vy = 0;
-
-        updateAABB(A);
+      // Decide who moves: if one is static, move the other.
+      // If both dynamic, split moves evenly in opposite directions.
+      function applyShift(k) {
+        if (invA > 0 && invB > 0) {
+          // Split: move both half (rounded) so net separation is k
+          const aK = Math.floor(k / 2);
+          const bK = k - aK;
+          A.x += -dx * aK;
+          A.y += -dy * aK;
+          B.x += dx * bK;
+          B.y += dy * bK;
+          snapBodyToCells(A);
+          snapBodyToCells(B);
+        } else if (invA > 0) {
+          A.x += -dx * k;
+          A.y += -dy * k;
+          snapBodyToCells(A);
+        } else if (invB > 0) {
+          B.x += dx * k;
+          B.y += dy * k;
+          snapBodyToCells(B);
+        }
       }
 
-      if (invB > 0) {
-        B.x += nx * moveB;
-        B.y += ny * moveB;
-        snapBodyToCells(B);
+      // Save original positions to restore after failed tries
+      const ax0 = A.x, ay0 = A.y;
+      const bx0 = B.x, by0 = B.y;
 
-        if (nx !== 0) B.vx = 0;
-        if (ny !== 0) B.vy = 0;
+      // Try k = 1..maxTry
+      for (let k = 1; k <= maxTry; k++) {
+        // Reset and apply trial shift
+        A.x = ax0; A.y = ay0;
+        B.x = bx0; B.y = by0;
+        applyShift(k);
 
-        updateAABB(B);
+        if (!anyOverlap(bodiesModule, A, B)) {
+          // Keep these moved positions
+          return k;
+        }
+      }
+
+      // Restore if no success
+      A.x = ax0; A.y = ay0;
+      B.x = bx0; B.y = by0;
+      return 0;
+    }
+
+    function resolvePairNoAABB(bodiesModule, A, B) {
+      if (!A || !B) return;
+      if ((A.invMass || 0) === 0 && (B.invMass || 0) === 0) return;
+
+      // If not overlapping, nothing to do
+      if (!anyOverlap(bodiesModule, A, B)) return;
+
+      // Try separating in 4 cardinal directions; choose the smallest k that clears overlap.
+      // This avoids “reversed normal” issues because we explicitly test clearance.
+      const trials = [
+        { dx: 1, dy: 0 },  // separate along +x / -x
+        { dx: -1, dy: 0 },
+        { dx: 0, dy: 1 },  // separate along +y / -y
+        { dx: 0, dy: -1 },
+      ];
+
+      let best = { k: 0, dx: 0, dy: 0 };
+
+      // Save original positions to restore between trials
+      const ax0 = A.x, ay0 = A.y;
+      const bx0 = B.x, by0 = B.y;
+
+      for (const t of trials) {
+        // Restore
+        A.x = ax0; A.y = ay0;
+        B.x = bx0; B.y = by0;
+
+        const k = trySeparateAxis(bodiesModule, A, B, t.dx, t.dy, MAX_SEP_TRY);
+        if (k > 0 && (best.k === 0 || k < best.k)) {
+          best = { k, dx: t.dx, dy: t.dy };
+        }
+      }
+
+      // Restore originals before applying best for real
+      A.x = ax0; A.y = ay0;
+      B.x = bx0; B.y = by0;
+
+      if (best.k > 0) {
+        // Apply best shift permanently
+        trySeparateAxis(bodiesModule, A, B, best.dx, best.dy, best.k);
+
+        // Kill velocity on the axis we separated (position-only stability)
+        if (best.dx !== 0) {
+          if (A.invMass) A.vx = 0;
+          if (B.invMass) B.vx = 0;
+        }
+        if (best.dy !== 0) {
+          if (A.invMass) A.vy = 0;
+          if (B.invMass) B.vy = 0;
+        }
+      } else {
+        // Couldn't separate within limit. As a safety, nudge up a bit for dynamic bodies.
+        if (DEBUG) console.warn("[physics] Could not separate pair within MAX_SEP_TRY", A.id, B.id);
+        if (A.invMass) { A.y -= 1; snapBodyToCells(A); A.vy = 0; }
+        if (B.invMass) { B.y -= 1; snapBodyToCells(B); B.vy = 0; }
       }
     }
 
@@ -195,40 +192,9 @@
       const arr = bodiesModule.getBodies ? bodiesModule.getBodies() : null;
       if (!arr) throw new Error("[physics] bodies.getBodies() missing.");
 
-      // One-time sanity checks
-      if (DEBUG && !didOneTimeCheck) {
-        didOneTimeCheck = true;
-
-        console.log("[physics] DEBUG enabled");
-
-        if (typeof bodiesModule.hasSolidAtWorld !== "function") {
-          throw new Error(
-            "[physics] bodies.hasSolidAtWorld is not a function. " +
-              "Your bodies.js return object did not include it correctly."
-          );
-        }
-
-        if (arr.length > 0) {
-          const b = arr[0];
-          updateAABB(b);
-          const testX = Math.floor(b.x);
-          const testY = Math.floor(b.y);
-
-          const v = bodiesModule.hasSolidAtWorld(b, testX, testY);
-          console.log("[physics] hasSolidAtWorld sanity test:", {
-            bodyId: b.id,
-            testX,
-            testY,
-            returned: v,
-          });
-        } else {
-          console.log("[physics] No bodies yet; create one and refresh.");
-        }
-      }
-
       const floorY = getFloorY(world);
 
-      // 1) Integrate
+      // 1) Integrate (gravity only)
       for (let i = 0; i < arr.length; i++) {
         const b = arr[i];
         if (!b || b.invMass === 0) continue;
@@ -241,13 +207,14 @@
         b.y += b.vy * dt;
 
         snapBodyToCells(b);
-        updateAABB(b);
       }
 
       // 2) Ground
-      for (let i = 0; i < arr.length; i++) collideWithGround(arr[i], floorY);
+      for (let i = 0; i < arr.length; i++) {
+        collideWithGround(arr[i], floorY);
+      }
 
-      // 3) Pairs
+      // 3) Solve body-body collisions (no AABB)
       for (let iter = 0; iter < SOLVER_ITERS; iter++) {
         for (let i = 0; i < arr.length; i++) {
           const A = arr[i];
@@ -256,23 +223,15 @@
           for (let j = i + 1; j < arr.length; j++) {
             const B = arr[j];
             if (!B) continue;
-            if (A.invMass === 0 && B.invMass === 0) continue;
 
-            updateAABB(A);
-            updateAABB(B);
-
-            if (!aabbOverlap(A.aabb, B.aabb)) continue;
-
-            resolveTileOverlap(bodiesModule, A, B);
+            resolvePairNoAABB(bodiesModule, A, B);
           }
         }
 
-        for (let i = 0; i < arr.length; i++) collideWithGround(arr[i], floorY);
-      }
-
-      if (DEBUG && (performance.now() | 0) % 1000 < 16) {
-        console.log("[physics] hasSolidAtWorld calls (approx/s):", hasSolidCalls);
-        hasSolidCalls = 0;
+        // Re-apply ground after resolves (prevents sinking from pushes)
+        for (let i = 0; i < arr.length; i++) {
+          collideWithGround(arr[i], floorY);
+        }
       }
     }
 
