@@ -32,6 +32,7 @@
     await loadScript("renderer.js");
     await loadScript("world.js");
     await loadScript("bodies.js");
+    await loadScript("centroid.js");
     await loadScript("sketcher.js");
     await loadScript("physics.js"); // <-- added
     startApp();
@@ -52,6 +53,7 @@
     const renderer = window.Renderer.createRenderer({ version: VERSION });
     const world = window.World.createWorld({ width: WORLD_W, height: WORLD_H });
     const bodies = window.Bodies.createBodies();
+    const centroid = window.Centroid.createCentroid(bodies);
     const sketcher = window.Sketcher.createSketcher(bodies);
 
     // New physics module (gravity + integration only)
@@ -161,6 +163,7 @@
 
       // 2) Dynamic bodies
       bodies.draw(ctx, cam);
+      centroid.drawDebug(ctx, cam);
 
       // 3) Tool preview
       sketcher.drawPreview(ctx, cam, worldToScreen);
@@ -175,6 +178,7 @@
 
       // Step physics (gravity + integration only)
       physics.step(world, bodies, dt);
+      centroid.updateAll();
 
       // Keep camera valid
       clampCameraToWorld();
