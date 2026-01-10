@@ -12,6 +12,9 @@
   const MIN_ZOOM_ABS = 0.02; // safety floor
   const MAX_ZOOM = 10;
 
+  // Physics baseline
+  const GRAVITY = 2000; // world units / s^2
+
   // =========================
   // Loader: keep index.html unchanged
   // =========================
@@ -30,6 +33,7 @@
     await loadScript("world.js");
     await loadScript("bodies.js");
     await loadScript("sketcher.js");
+    await loadScript("physics.js"); // <-- added
     startApp();
   }
 
@@ -50,6 +54,9 @@
     const bodies = window.Bodies.createBodies();
     const sketcher = window.Sketcher.createSketcher(bodies);
 
+    // New physics module (gravity + integration only)
+    const physics = window.Physics.createPhysics({ gravity: GRAVITY });
+
     const cam = { x: 0, y: 0, z: 1.0 };
 
     // Middle mouse pan
@@ -64,6 +71,10 @@
     let suppressNextClick = false;
 
     let didInitCenter = false;
+
+    // RAF loop timing
+    let lastT = performance.now();
+    let rafId = 0;
 
     function clamp(v, a, b) {
       return Math.max(a, Math.min(b, v));
@@ -104,15 +115,17 @@
       return { w: rect.width / cam.z, h: rect.height / cam.z };
     }
 
-   function centerCamera() {
-  applyZoomLimits();
-  const view = getViewWorldSize();
+    function centerCamera() {
+      applyZoomLimits();
+      const view = getViewWorldSize();
 
-  const floorY = WORLD_H - WORLD_H / 5;
+      // Floor is 1/5 up from bottom of world
+      const floorY = WORLD_H - WORLD_H / 5;
 
-  cam.x = (WORLD_W - view.w) / 2;
-  cam.y = floorY - view.h * 0.8;
-}
+      cam.x = (WORLD_W - view.w) / 2;
+      // Place floor 1/5 up from bottom of viewport => floor at 80% screen height
+      cam.y = floorY - view.h * 0.8;
+    }
 
     function clampCameraToWorld() {
       const view = getViewWorldSize();
@@ -138,8 +151,6 @@
         applyZoomLimits();
         clampCameraToWorld();
       }
-
-      draw();
     }
 
     function draw() {
@@ -156,6 +167,27 @@
 
       // 4) UI
       renderer.drawVersion(ctx);
+    }
+
+    function tick(t) {
+      const dt = Math.min(0.05, (t - lastT) / 1000); // cap to avoid huge jumps
+      lastT = t;
+
+      // Step physics (gravity + integration only)
+      physics.step(world, bodies, dt);
+
+      // Keep camera valid
+      clampCameraToWorld();
+
+      // Preview should track mouse while placing; keep it fresh even without mousemove
+      // (If you later add keyboard tools, this keeps preview stable.)
+      // No-op unless placing; safe.
+      // NOTE: We don't have a persistent mouse position here; your mousemove updates it already.
+
+      // Render every frame
+      draw();
+
+      rafId = requestAnimationFrame(tick);
     }
 
     // Prevent middle-click autoscroll icon
@@ -186,7 +218,6 @@
             dragBodyId = id;
             dragOffset = { x: pWorld.x - pos.x, y: pWorld.y - pos.y };
             suppressNextClick = true; // suppress click after drag
-            draw();
             return;
           }
         }
@@ -205,7 +236,6 @@
         cam.y = panStartCam.y - dy / cam.z;
 
         clampCameraToWorld();
-        draw();
         return;
       }
 
@@ -214,20 +244,17 @@
         const newX = pWorld.x - dragOffset.x;
         const newY = pWorld.y - dragOffset.y;
         bodies.setBodyPos(dragBodyId, newX, newY);
-        draw();
         return;
       }
 
       if (sketcher.isPlacing()) {
         sketcher.updatePlacing(pWorld);
-        draw();
       }
     });
 
     window.addEventListener("mouseup", (e) => {
       if (e.button === 1) {
         panning = false;
-        draw();
         return;
       }
 
@@ -236,7 +263,6 @@
           draggingBody = false;
           dragBodyId = -1;
           dragOffset = { x: 0, y: 0 };
-          draw();
         }
       }
     });
@@ -265,8 +291,6 @@
       } else {
         sketcher.finalizePlacing(pWorld);
       }
-
-      draw();
     });
 
     // Zoom at cursor (applied zoom math)
@@ -297,8 +321,6 @@
         if (sketcher.isPlacing()) {
           sketcher.updatePlacing(screenToWorld(pScreen));
         }
-
-        draw();
       },
       { passive: false }
     );
@@ -310,19 +332,20 @@
         draggingBody = false;
         dragBodyId = -1;
         suppressNextClick = false;
-        draw();
       }
 
       if (e.key.toLowerCase() === "c") {
         centerCamera();
         clampCameraToWorld();
-        draw();
       }
     });
 
     window.addEventListener("resize", resize);
 
+    // Init sizing + camera once, then start RAF loop
     resize();
+    lastT = performance.now();
+    rafId = requestAnimationFrame(tick);
   }
 
   boot().catch((err) => {
