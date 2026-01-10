@@ -32,18 +32,21 @@
       );
     }
 
-    function getFloorY(world) {
-      // Prefer explicit world property / getter if you have it
-      if (world && typeof world.getFloorY === "function") return world.getFloorY();
-      if (world && typeof world.floorY === "number") return world.floorY;
+function getFloorY(world) {
+  // Prefer explicit world property / getter if you have it
+  if (world && typeof world.getFloorY === "function") return world.getFloorY();
 
-      // Fallback to your current convention: floor at height - height/5
-      if (world && typeof world.height === "number") return world.height - world.height / 5;
+  // Your world.js uses groundY
+  if (world && typeof world.groundY === "number") return world.groundY;
 
-      // Last resort: assume same as your main baseline height
-      // (This should rarely happen; you can delete if you prefer hard failure.)
-      return 0;
-    }
+  // Older/alternate naming
+  if (world && typeof world.floorY === "number") return world.floorY;
+
+  // Fallback to convention
+  if (world && typeof world.height === "number") return world.height - world.height / 5;
+
+  return 0;
+}
 
     // ---------------------------------------------------------
     // Ground collision: clamp body bottom to floor plane
