@@ -518,15 +518,24 @@
       }
     }
 
-    return {
-      createBodyFromStamp,
-      hitTest,
-      setBodyPos,
-      getBodyPos,
-      getBodyMass,
-      getBodies: () => bodies,
-      draw,
-    };
+return {
+  createBodyFromStamp,
+  hitTest,
+  setBodyPos,
+  getBodyPos,
+  getBodyMass,
+  getBodies: () => bodies,
+
+  // Expose solid occupancy query for physics narrow-phase
+  // Usage: bodies.hasSolidAtWorld(bodyRef, wx, wy)
+  hasSolidAtWorld: (body, wx, wy) => {
+    if (!body) return 0;
+    return bodyHasSolidAtWorld(body, wx, wy) ? 1 : 0;
+  },
+
+  draw,
+};
+
   }
 
   window.Bodies = { createBodies };
