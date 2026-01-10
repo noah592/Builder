@@ -1,25 +1,19 @@
 (() => {
   function createPhysics(opts = {}) {
-    // Gravity in world-units / second^2 (positive Y = down)
     const GRAVITY = typeof opts.gravity === "number" ? opts.gravity : 2000;
 
-    // Solver iterations (more = better stacking / less sinking)
-    const SOLVER_ITERS = typeof opts.solverIters === "number" ? opts.solverIters : 4;
+    // More iterations = better stacking (still cheap because overlap regions are small)
+    const SOLVER_ITERS = typeof opts.solverIters === "number" ? opts.solverIters : 6;
 
-    // Small penetration slop (reduces jitter)
-    const SLOP = typeof opts.slop === "number" ? opts.slop : 0.5;
+    // Ignore tiny penetrations (in cells)
+    const SLOP_CELLS = typeof opts.slopCells === "number" ? opts.slopCells : 0;
 
     // Positional correction fraction (0..1). <1 reduces ping-pong.
-    const POS_CORR = typeof opts.posCorr === "number" ? opts.posCorr : 0.8;
+    const POS_CORR = typeof opts.posCorr === "number" ? opts.posCorr : 1.0;
 
-    // Cap per-pair separation per iteration to avoid “teleporty” corrections
-    const MAX_SEP = typeof opts.maxSep === "number" ? opts.maxSep : 64;
-
-    // ---------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------
     function updateAABB(b) {
       if (!b.aabb) b.aabb = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+      // Keep half-open bounds: [min, max)
       b.aabb.minX = b.x;
       b.aabb.minY = b.y;
       b.aabb.maxX = b.x + b.w;
@@ -27,6 +21,7 @@
     }
 
     function aabbOverlap(a, b) {
+      // half-open overlap test
       return !(
         a.maxX <= b.minX ||
         a.minX >= b.maxX ||
@@ -44,14 +39,13 @@
     }
 
     // ---------------------------------------------------------
-    // Ground collision: clamp body bottom to floor plane
+    // Ground collision (plane at y = floorY)
     // ---------------------------------------------------------
     function collideWithGround(b, floorY) {
       if (!b || b.invMass === 0) return;
 
       const bottom = b.y + b.h;
       const pen = bottom - floorY;
-
       if (pen > 0) {
         b.y -= pen;
         if (b.vy > 0) b.vy = 0;
@@ -60,130 +54,125 @@
     }
 
     // ---------------------------------------------------------
-    // Tile-based narrow phase
-    // Determine if actual solids overlap inside AABB intersection
+    // Narrow phase: find bounding box of overlapped SOLID cells
+    // Returns null if no overlapped solid cells
+    // Returns { minX, minY, maxX, maxY } inclusive integer cell coords
     // ---------------------------------------------------------
-    function computeIntersectionCells(A, B) {
+    function overlappedSolidCellBounds(bodiesModule, A, B) {
+      if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
+        console.warn("[physics] bodies.hasSolidAtWorld(body, x, y) missing.");
+        return null;
+      }
+
       const a = A.aabb;
       const b = B.aabb;
 
+      // Intersection in world space (continuous)
       const ix0 = Math.max(a.minX, b.minX);
       const iy0 = Math.max(a.minY, b.minY);
       const ix1 = Math.min(a.maxX, b.maxX);
       const iy1 = Math.min(a.maxY, b.maxY);
 
-      // We will iterate integer cell coordinates.
-      // Use floor/ceil to cover all potentially overlapping integer cells.
-      const x0 = Math.floor(ix0);
-      const y0 = Math.floor(iy0);
-      const x1 = Math.ceil(ix1);
-      const y1 = Math.ceil(iy1);
+      if (ix1 <= ix0 || iy1 <= iy0) return null;
 
-      return { x0, y0, x1, y1 };
-    }
+      // Convert to integer cell coordinates for half-open bounds:
+      // cells potentially overlapped are:
+      // x in [ceil(ix0), floor(ix1-1)]
+      const x0 = Math.ceil(ix0);
+      const y0 = Math.ceil(iy0);
+      const x1 = Math.floor(ix1 - 1e-9) - 0; // tiny epsilon to avoid ix1 exact int edge cases
+      const y1 = Math.floor(iy1 - 1e-9) - 0;
 
-    function hasAnySolidOverlap(bodiesModule, A, B) {
-      if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
-        console.warn("[physics] bodies.hasSolidAtWorld(body, x, y) missing.");
-        return false;
-      }
+      if (x1 < x0 || y1 < y0) return null;
 
-      const { x0, y0, x1, y1 } = computeIntersectionCells(A, B);
-      if (x1 <= x0 || y1 <= y0) return false;
+      let minOX = Infinity, minOY = Infinity;
+      let maxOX = -Infinity, maxOY = -Infinity;
+      let any = false;
 
-      // Iterate overlap region; early out on first solid-solid cell.
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
           if (!bodiesModule.hasSolidAtWorld(A, x, y)) continue;
-          if (bodiesModule.hasSolidAtWorld(B, x, y)) return true;
+          if (!bodiesModule.hasSolidAtWorld(B, x, y)) continue;
+
+          any = true;
+          if (x < minOX) minOX = x;
+          if (y < minOY) minOY = y;
+          if (x > maxOX) maxOX = x;
+          if (y > maxOY) maxOY = y;
         }
       }
-      return false;
+
+      if (!any) return null;
+
+      return { minX: minOX, minY: minOY, maxX: maxOX, maxY: maxOY };
     }
 
     // ---------------------------------------------------------
-    // Choose a stable separation axis (normal) for tile overlap
-    // We still use AABB minimum overlap axis, but ONLY after confirming
-    // actual tile overlap. This removes most false-positive jitter.
+    // Resolve using overlapped cell bbox to compute penetration in CELLS
+    // Position-only + cancel velocity on resolved axis
     // ---------------------------------------------------------
-    function computeAABBNormalAndDepth(A, B) {
-      const a = A.aabb;
-      const b = B.aabb;
+    function resolveTileOverlap(bodiesModule, A, B) {
+      if (!A || !B) return;
+      if (A.invMass === 0 && B.invMass === 0) return;
 
-      const overlapX = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
-      const overlapY = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+      const overlapCells = overlappedSolidCellBounds(bodiesModule, A, B);
+      if (!overlapCells) return;
 
-      let nx = 0, ny = 0, sep = 0;
+      // Penetration depth in integer cells (inclusive bbox => +1)
+      const penX = (overlapCells.maxX - overlapCells.minX + 1);
+      const penY = (overlapCells.maxY - overlapCells.minY + 1);
 
-      if (overlapX < overlapY) {
-        sep = overlapX;
-        const aCx = (a.minX + a.maxX) * 0.5;
-        const bCx = (b.minX + b.maxX) * 0.5;
+      let nx = 0, ny = 0, sepCells = 0;
+
+      // Choose smallest penetration axis (cell-based, stable)
+      if (penX < penY) {
+        sepCells = penX;
+        // Direction based on centers (A pushed away from B)
+        const aCx = (A.aabb.minX + A.aabb.maxX) * 0.5;
+        const bCx = (B.aabb.minX + B.aabb.maxX) * 0.5;
         nx = aCx < bCx ? -1 : 1;
         ny = 0;
       } else {
-        sep = overlapY;
-        const aCy = (a.minY + a.maxY) * 0.5;
-        const bCy = (b.minY + b.maxY) * 0.5;
+        sepCells = penY;
+        const aCy = (A.aabb.minY + A.aabb.maxY) * 0.5;
+        const bCy = (B.aabb.minY + B.aabb.maxY) * 0.5;
         nx = 0;
         ny = aCy < bCy ? -1 : 1;
       }
 
-      return { nx, ny, sep };
-    }
+      // Slop and correction
+      sepCells = Math.max(0, sepCells - SLOP_CELLS);
+      if (sepCells <= 0) return;
 
-    // ---------------------------------------------------------
-    // Resolve a confirmed (tile-overlap) collision pair
-    // Positional correction + cancel relative normal velocity (inelastic)
-    // ---------------------------------------------------------
-    function resolveConfirmedOverlap(A, B) {
-      if (!A || !B) return;
-      if (A.invMass === 0 && B.invMass === 0) return;
-
-      const { nx, ny, sep } = computeAABBNormalAndDepth(A, B);
-
-      // Apply slop + correction factor
-      let corrected = Math.max(0, sep - SLOP) * POS_CORR;
-      if (corrected <= 0) return;
-
-      corrected = Math.min(corrected, MAX_SEP);
+      const sep = sepCells * POS_CORR;
 
       const invA = A.invMass || 0;
       const invB = B.invMass || 0;
       const invSum = invA + invB;
       if (invSum <= 0) return;
 
-      const moveA = corrected * (invA / invSum);
-      const moveB = corrected * (invB / invSum);
+      const moveA = sep * (invA / invSum);
+      const moveB = sep * (invB / invSum);
 
-      // Separate: move A opposite normal, B along normal
+      // Move A opposite normal, B along normal
       if (invA > 0) {
         A.x += -nx * moveA;
         A.y += -ny * moveA;
+
+        // Cancel velocity component into the normal (position-only solver stability)
+        if (nx !== 0) A.vx = 0;
+        if (ny !== 0) A.vy = 0;
+
         updateAABB(A);
       }
       if (invB > 0) {
         B.x += nx * moveB;
         B.y += ny * moveB;
+
+        if (nx !== 0) B.vx = 0;
+        if (ny !== 0) B.vy = 0;
+
         updateAABB(B);
-      }
-
-      // Cancel relative velocity into the normal (no bounce yet)
-      const rvx = (B.vx || 0) - (A.vx || 0);
-      const rvy = (B.vy || 0) - (A.vy || 0);
-      const relN = rvx * nx + rvy * ny;
-
-      if (relN >= 0) return;
-
-      const j = -relN / invSum;
-
-      if (invA > 0) {
-        A.vx -= j * invA * nx;
-        A.vy -= j * invA * ny;
-      }
-      if (invB > 0) {
-        B.vx += j * invB * nx;
-        B.vy += j * invB * ny;
       }
     }
 
@@ -210,19 +199,18 @@
         if (typeof b.vy !== "number") b.vy = 0;
 
         b.vy += GRAVITY * dt;
-
         b.x += b.vx * dt;
         b.y += b.vy * dt;
 
         updateAABB(b);
       }
 
-      // 2) Ground collision
+      // 2) Ground
       for (let i = 0; i < arr.length; i++) {
         collideWithGround(arr[i], floorY);
       }
 
-      // 3) Body-body collisions (AABB broad-phase + tile narrow-phase)
+      // 3) Body-body (AABB broad-phase + tile overlap narrow-phase)
       for (let iter = 0; iter < SOLVER_ITERS; iter++) {
         for (let i = 0; i < arr.length; i++) {
           const A = arr[i];
@@ -237,18 +225,14 @@
             if (!A.aabb) updateAABB(A);
             if (!B.aabb) updateAABB(B);
 
-            // Broad-phase
             if (!aabbOverlap(A.aabb, B.aabb)) continue;
 
-            // Narrow-phase: actual tile overlap?
-            if (!hasAnySolidOverlap(bodiesModule, A, B)) continue;
-
-            // Resolve confirmed overlap
-            resolveConfirmedOverlap(A, B);
+            // Resolve only if true solid overlap exists
+            resolveTileOverlap(bodiesModule, A, B);
           }
         }
 
-        // Re-apply ground after pair resolutions (prevents sinking)
+        // Re-apply ground after pushes
         for (let i = 0; i < arr.length; i++) {
           collideWithGround(arr[i], floorY);
         }
