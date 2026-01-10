@@ -81,8 +81,7 @@
 
     function applyNormalImpulse(A, B, nx, ny) {
       // Only normal impulse, no friction, no rotation.
-      ensureVel(A);
-      ensureVel(B);
+    
 
       const invA = A.invMass || 0;
       const invB = B.invMass || 0;
