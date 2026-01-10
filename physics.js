@@ -1,19 +1,18 @@
 (() => {
   function createPhysics(opts = {}) {
     const GRAVITY = typeof opts.gravity === "number" ? opts.gravity : 2000;
-
-    // More iterations = better stacking (still cheap because overlap regions are small)
     const SOLVER_ITERS = typeof opts.solverIters === "number" ? opts.solverIters : 6;
-
-    // Ignore tiny penetrations (in cells)
     const SLOP_CELLS = typeof opts.slopCells === "number" ? opts.slopCells : 0;
-
-    // Positional correction fraction (0..1). <1 reduces ping-pong.
     const POS_CORR = typeof opts.posCorr === "number" ? opts.posCorr : 1.0;
+
+    // ---- DEBUG TRIPWIRES ----
+    const DEBUG = opts.debug !== undefined ? !!opts.debug : true;
+    let didOneTimeCheck = false;
+    let hasSolidCalls = 0;
+    let didWarnOverlapScan = false;
 
     function updateAABB(b) {
       if (!b.aabb) b.aabb = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-      // Keep half-open bounds: [min, max)
       b.aabb.minX = b.x;
       b.aabb.minY = b.y;
       b.aabb.maxX = b.x + b.w;
@@ -21,7 +20,6 @@
     }
 
     function aabbOverlap(a, b) {
-      // half-open overlap test
       return !(
         a.maxX <= b.minX ||
         a.minX >= b.maxX ||
@@ -38,9 +36,6 @@
       return 0;
     }
 
-    // ---------------------------------------------------------
-    // Ground collision (plane at y = floorY)
-    // ---------------------------------------------------------
     function collideWithGround(b, floorY) {
       if (!b || b.invMass === 0) return;
 
@@ -53,35 +48,31 @@
       }
     }
 
-    // ---------------------------------------------------------
-    // Narrow phase: find bounding box of overlapped SOLID cells
-    // Returns null if no overlapped solid cells
-    // Returns { minX, minY, maxX, maxY } inclusive integer cell coords
-    // ---------------------------------------------------------
+    // ---- Narrow phase overlap bounds in integer cells ----
     function overlappedSolidCellBounds(bodiesModule, A, B) {
       if (!bodiesModule || typeof bodiesModule.hasSolidAtWorld !== "function") {
-        console.warn("[physics] bodies.hasSolidAtWorld(body, x, y) missing.");
-        return null;
+        // HARD FAIL so you can't miss it
+        throw new Error(
+          "[physics] bodies.hasSolidAtWorld(body, x, y) is missing. " +
+            "You must expose it from bodies.js return object."
+        );
       }
 
       const a = A.aabb;
       const b = B.aabb;
 
-      // Intersection in world space (continuous)
       const ix0 = Math.max(a.minX, b.minX);
       const iy0 = Math.max(a.minY, b.minY);
       const ix1 = Math.min(a.maxX, b.maxX);
       const iy1 = Math.min(a.maxY, b.maxY);
-
       if (ix1 <= ix0 || iy1 <= iy0) return null;
 
-      // Convert to integer cell coordinates for half-open bounds:
-      // cells potentially overlapped are:
-      // x in [ceil(ix0), floor(ix1-1)]
+      // IMPORTANT: treat AABBs as half-open [min, max)
+      // Cells to test are those with integer coordinates inside the intersection.
       const x0 = Math.ceil(ix0);
       const y0 = Math.ceil(iy0);
-      const x1 = Math.floor(ix1 - 1e-9) - 0; // tiny epsilon to avoid ix1 exact int edge cases
-      const y1 = Math.floor(iy1 - 1e-9) - 0;
+      const x1 = Math.floor(ix1 - 1e-9);
+      const y1 = Math.floor(iy1 - 1e-9);
 
       if (x1 < x0 || y1 < y0) return null;
 
@@ -89,8 +80,19 @@
       let maxOX = -Infinity, maxOY = -Infinity;
       let any = false;
 
+      // If overlap region is huge, that's suspicious (would be slow).
+      if (DEBUG && !didWarnOverlapScan) {
+        const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+        if (area > 200000) {
+          console.warn("[physics] Huge overlap scan region:", { x0, y0, x1, y1, area });
+          didWarnOverlapScan = true;
+        }
+      }
+
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
+          hasSolidCalls += 2;
+
           if (!bodiesModule.hasSolidAtWorld(A, x, y)) continue;
           if (!bodiesModule.hasSolidAtWorld(B, x, y)) continue;
 
@@ -103,31 +105,23 @@
       }
 
       if (!any) return null;
-
       return { minX: minOX, minY: minOY, maxX: maxOX, maxY: maxOY };
     }
 
-    // ---------------------------------------------------------
-    // Resolve using overlapped cell bbox to compute penetration in CELLS
-    // Position-only + cancel velocity on resolved axis
-    // ---------------------------------------------------------
     function resolveTileOverlap(bodiesModule, A, B) {
       if (!A || !B) return;
       if (A.invMass === 0 && B.invMass === 0) return;
 
-      const overlapCells = overlappedSolidCellBounds(bodiesModule, A, B);
-      if (!overlapCells) return;
+      const o = overlappedSolidCellBounds(bodiesModule, A, B);
+      if (!o) return;
 
-      // Penetration depth in integer cells (inclusive bbox => +1)
-      const penX = (overlapCells.maxX - overlapCells.minX + 1);
-      const penY = (overlapCells.maxY - overlapCells.minY + 1);
+      const penX = o.maxX - o.minX + 1;
+      const penY = o.maxY - o.minY + 1;
 
       let nx = 0, ny = 0, sepCells = 0;
 
-      // Choose smallest penetration axis (cell-based, stable)
       if (penX < penY) {
         sepCells = penX;
-        // Direction based on centers (A pushed away from B)
         const aCx = (A.aabb.minX + A.aabb.maxX) * 0.5;
         const bCx = (B.aabb.minX + B.aabb.maxX) * 0.5;
         nx = aCx < bCx ? -1 : 1;
@@ -140,7 +134,6 @@
         ny = aCy < bCy ? -1 : 1;
       }
 
-      // Slop and correction
       sepCells = Math.max(0, sepCells - SLOP_CELLS);
       if (sepCells <= 0) return;
 
@@ -154,12 +147,11 @@
       const moveA = sep * (invA / invSum);
       const moveB = sep * (invB / invSum);
 
-      // Move A opposite normal, B along normal
       if (invA > 0) {
         A.x += -nx * moveA;
         A.y += -ny * moveA;
 
-        // Cancel velocity component into the normal (position-only solver stability)
+        // Position-only solver: kill velocity along axis
         if (nx !== 0) A.vx = 0;
         if (ny !== 0) A.vy = 0;
 
@@ -176,21 +168,51 @@
       }
     }
 
-    // ---------------------------------------------------------
-    // Step
-    // ---------------------------------------------------------
     function step(world, bodiesModule, dt) {
       if (!dt || dt <= 0) return;
 
       const arr = bodiesModule.getBodies ? bodiesModule.getBodies() : null;
-      if (!arr) {
-        console.warn("[physics] bodies.getBodies() missing.");
-        return;
+      if (!arr) throw new Error("[physics] bodies.getBodies() missing.");
+
+      // One-time sanity checks (very important)
+      if (DEBUG && !didOneTimeCheck) {
+        didOneTimeCheck = true;
+
+        console.log("[physics] DEBUG enabled");
+
+        // 1) Verify function exists
+        if (typeof bodiesModule.hasSolidAtWorld !== "function") {
+          throw new Error(
+            "[physics] bodies.hasSolidAtWorld is not a function. " +
+              "Your bodies.js return object did not include it correctly."
+          );
+        }
+
+        // 2) If there is at least one body, test a known solid cell:
+        // pick the first body, find its top-left cell in world coords, and query it.
+        if (arr.length > 0) {
+          const b = arr[0];
+          updateAABB(b);
+          const testX = Math.floor(b.x);
+          const testY = Math.floor(b.y);
+
+          const v = bodiesModule.hasSolidAtWorld(b, testX, testY);
+          console.log("[physics] hasSolidAtWorld sanity test:", {
+            bodyId: b.id,
+            testX,
+            testY,
+            returned: v,
+            note:
+              "If returned is 0 but that cell should be inside the body, your hasSolidAtWorld wiring is wrong.",
+          });
+        } else {
+          console.log("[physics] No bodies yet; create one and refresh to see overlap checks.");
+        }
       }
 
       const floorY = getFloorY(world);
 
-      // 1) Integrate (gravity only)
+      // 1) Integrate
       for (let i = 0; i < arr.length; i++) {
         const b = arr[i];
         if (!b || b.invMass === 0) continue;
@@ -206,11 +228,9 @@
       }
 
       // 2) Ground
-      for (let i = 0; i < arr.length; i++) {
-        collideWithGround(arr[i], floorY);
-      }
+      for (let i = 0; i < arr.length; i++) collideWithGround(arr[i], floorY);
 
-      // 3) Body-body (AABB broad-phase + tile overlap narrow-phase)
+      // 3) Pairs
       for (let iter = 0; iter < SOLVER_ITERS; iter++) {
         for (let i = 0; i < arr.length; i++) {
           const A = arr[i];
@@ -219,23 +239,24 @@
           for (let j = i + 1; j < arr.length; j++) {
             const B = arr[j];
             if (!B) continue;
-
             if (A.invMass === 0 && B.invMass === 0) continue;
 
-            if (!A.aabb) updateAABB(A);
-            if (!B.aabb) updateAABB(B);
+            updateAABB(A);
+            updateAABB(B);
 
             if (!aabbOverlap(A.aabb, B.aabb)) continue;
 
-            // Resolve only if true solid overlap exists
             resolveTileOverlap(bodiesModule, A, B);
           }
         }
 
-        // Re-apply ground after pushes
-        for (let i = 0; i < arr.length; i++) {
-          collideWithGround(arr[i], floorY);
-        }
+        for (let i = 0; i < arr.length; i++) collideWithGround(arr[i], floorY);
+      }
+
+      // Periodically show that narrow-phase is being exercised
+      if (DEBUG && (performance.now() | 0) % 1000 < 16) {
+        console.log("[physics] hasSolidAtWorld calls (approx/s):", hasSolidCalls);
+        hasSolidCalls = 0;
       }
     }
 
