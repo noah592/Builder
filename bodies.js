@@ -526,16 +526,21 @@ return {
   getBodyMass,
   getBodies: () => bodies,
 
-  // Expose solid occupancy query for physics narrow-phase
-  // Usage: bodies.hasSolidAtWorld(bodyRef, wx, wy)
+  // Solid occupancy query for physics / geometry
   hasSolidAtWorld: (body, wx, wy) => {
     if (!body) return 0;
     return bodyHasSolidAtWorld(body, wx, wy) ? 1 : 0;
   },
 
+  // Efficient solid-cell iterator (world coords)
+  // Usage: bodies.forEachSolidCellWorld(bodyRef, (wx, wy) => { ... })
+  forEachSolidCellWorld: (body, fn) => {
+    if (!body || typeof fn !== "function") return;
+    forEachSolidCellWorld(body, fn);
+  },
+
   draw,
 };
-
   }
 
   window.Bodies = { createBodies };
