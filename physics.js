@@ -9,7 +9,7 @@
     const MAX_SEP_TRY = typeof opts.maxSepTry === "number" ? opts.maxSepTry : 32;
 
     // Restitution (bounciness). Start at 0 for stability.
-    const RESTITUTION = typeof opts.restitution === "number" ? opts.restitution : 0.0;
+    const RESTITUTION = typeof opts.restitution === "number" ? opts.restitution : 0.4;
 
     // Debug (optional)
     const DEBUG = opts.debug !== undefined ? !!opts.debug : false;
